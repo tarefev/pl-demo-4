@@ -308,6 +308,67 @@ button {
 .doc-block ol { padding-left: 22px; }
 .doc-block li { margin: 4px 0; }
 
+/* Ховер-звёздочка действий у блока */
+.doc-block__star {
+  position: absolute;
+  right: -29px;
+  top: 42px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent);
+  opacity: 0;
+  transition: opacity .15s;
+}
+.doc-block:hover .doc-block__star,
+.doc-block.is-active .doc-block__star { opacity: 1; }
+.doc-block__star:hover { background: var(--accent-soft); }
+.doc-block__star svg { width: 15px; height: 15px; }
+
+/* Меню действий у блока */
+.block-menu {
+  position: fixed;
+  z-index: 60;
+  width: 300px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(20, 24, 40, .18);
+  padding: 10px 6px 6px;
+}
+.block-menu[hidden] { display: none; }
+.block-menu__summary {
+  padding: 2px 12px 8px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.block-menu__row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 12px 2px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+}
+.block-menu__divider {
+  height: 1px;
+  background: var(--border);
+  margin: 6px 0;
+}
+.block-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 12px;
+  border-radius: 8px;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.block-menu button:hover { background: var(--accent-soft-2); color: var(--accent); }
+
 .doc-block__heading {
   font-weight: 700;
   text-align: center;
@@ -672,14 +733,6 @@ button {
   z-index: 30;
 }
 .star-menu.is-open { display: block; }
-.star-menu__header {
-  padding: 7px 11px 5px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: var(--text-muted);
-}
 .star-menu button {
   display: block;
   width: 100%;
@@ -811,4 +864,5 @@ button {
   .assistant-pane { width: 330px; }
   .doc-scroll { padding: 20px 24px 60px; }
   .doc-block__status { right: -20px; }
+  .doc-block__star { right: -21px; }
 }

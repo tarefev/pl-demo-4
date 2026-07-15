@@ -109,6 +109,9 @@ function renderBlocks() {
       <span class="doc-block__label" contenteditable="false">${block.label}</span>
       <button class="doc-block__status ${block.status === 'done' ? 'is-done' : ''}"
               contenteditable="false" title="Статус блока" tabindex="-1"></button>
+      <button class="doc-block__star" contenteditable="false" title="Действия по блоку" tabindex="-1">
+        <svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.3L19 10l-5.1 1.7L12 17l-1.9-5.3L5 10l5.1-1.7z" fill="currentColor"/><path d="M19 15l.9 2.4L22 18l-2.1.7L19 21l-.9-2.3L16 18l2.1-.6z" fill="currentColor"/></svg>
+      </button>
       ${block.html}`;
     el.addEventListener('focusin', () => setActiveBlock(block.id));
     el.addEventListener('click', () => setActiveBlock(block.id));
@@ -117,7 +120,13 @@ function renderBlocks() {
       const copy = el.cloneNode(true);
       copy.querySelector('.doc-block__label')?.remove();
       copy.querySelector('.doc-block__status')?.remove();
+      copy.querySelector('.doc-block__star')?.remove();
       block.html = copy.innerHTML;
+    });
+    el.querySelector('.doc-block__star').addEventListener('click', e => {
+      e.stopPropagation();
+      setActiveBlock(block.id);
+      openBlockMenu(block, e.currentTarget);
     });
     docBlocksEl.appendChild(el);
   });
@@ -191,12 +200,13 @@ function regenerateBlock(id, newText) {
 }
 
 /** Вставляет новый блок (после activeBlock или в конец), возвращает его id. */
-function insertBlock(text, { afterId } = {}) {
+function insertBlock(text, { afterId, lineId } = {}) {
   const n = state.blocks.length + 1;
   const block = {
     id: `block-new-${n}`,
     label: `Блок ${n}`,
     status: 'done',
+    lineId: lineId || null,
     html: text
   };
   const idx = afterId ? state.blocks.findIndex(b => b.id === afterId) : -1;
@@ -816,7 +826,9 @@ async function onLineChosen(line, episode, { created } = {}) {
   if (!created) await think('Привязываю линию к блоку', 1200);
 
   state.boundLines.add(line.id);
-  const blockLabel = getBlock(state.activeBlockId)?.label || 'блоку';
+  const boundBlock = getBlock(state.activeBlockId);
+  if (boundBlock) boundBlock.lineId = line.id;
+  const blockLabel = boundBlock?.label || 'блоку';
 
   offerChoices([
     {
@@ -905,7 +917,7 @@ async function createLine6(episode, title, thesis) {
       onPick: async () => {
         addMessage('user', 'Добавить после активного блока');
         await think('Генерирую текст по линии защиты', 1800);
-        insertBlock(composeBlockText(line), { afterId: state.activeBlockId });
+        insertBlock(composeBlockText(line), { afterId: state.activeBlockId, lineId: line.id });
         state.boundLines.add(line.id);
         addPlea(line.plea || PLEA_FALLBACK);
         endScenario('Текст по линии добавлен после активного блока, просительная часть обновлена.');
@@ -918,7 +930,7 @@ async function createLine6(episode, title, thesis) {
       onPick: async () => {
         addMessage('user', 'Добавить в конец документа');
         await think('Генерирую текст по линии защиты', 1800);
-        insertBlock(composeBlockText(line));
+        insertBlock(composeBlockText(line), { lineId: line.id });
         state.boundLines.add(line.id);
         addPlea(line.plea || PLEA_FALLBACK);
         endScenario('Текст по линии добавлен в конец документа, просительная часть обновлена.');
@@ -966,7 +978,7 @@ async function step15_1() {
         addMessage('user', 'Добавить все линии');
         await think('Генерирую текст документа по выбранным линиям защиты', 2200);
         unbound.forEach(line => {
-          insertBlock(composeBlockText(line));
+          insertBlock(composeBlockText(line), { lineId: line.id });
           state.boundLines.add(line.id);
           addPlea(line.plea || PLEA_FALLBACK);
         });
@@ -1042,7 +1054,7 @@ async function runGenByLines() {
 
   await think('Генерирую текст по непривязанным линиям защиты', 2200);
   unbound.forEach(line => {
-    insertBlock(composeBlockText(line));
+    insertBlock(composeBlockText(line), { lineId: line.id });
     state.boundLines.add(line.id);
     addPlea(line.plea || PLEA_FALLBACK);
   });
@@ -1121,9 +1133,8 @@ const modalOverlay = $('#modal-overlay');
 const modalEl = $('#modal');
 
 function renderStarMenu() {
-  const block = getBlock(state.activeBlockId);
-  starMenu.innerHTML = `<div class="star-menu__header">${block ? 'Действия · ' + block.label : 'Действия по блоку'}</div>`;
-  STAR_ACTIONS.forEach(action => {
+  starMenu.innerHTML = '';
+  CHAT_STAR_ACTIONS.forEach(action => {
     const btn = document.createElement('button');
     btn.textContent = action.label;
     btn.addEventListener('click', () => {
@@ -1194,8 +1205,79 @@ function runStarAction(action) {
       startScenario('rewrite-block', 'Переписать блок');
       awaitText('Как хотите изменить текст блока?', text => onRewriteBlock(block, text));
       break;
+    case 'help':
+      addMessage('user', 'Показать справку');
+      startHelp();
+      break;
+    case 'check-doc':
+      addMessage('user', 'Проверить документ');
+      startCheckDoc();
+      break;
   }
 }
+
+/* ---------- Меню действий у блока (ховер-звёздочка) ---------- */
+
+const blockMenuEl = $('#block-menu');
+
+const BLOCK_ACTION_LABELS = {
+  'bind-line': 'Привязать линию защиты',
+  'practice': 'Практика по линии защиты',
+  'bind-evidence': 'Привязать доказательство',
+  'rewrite': 'Переписать блок',
+  'longer': 'Сделать подробнее',
+  'shorter': 'Сделать короче'
+};
+
+function openBlockMenu(block, anchorBtn) {
+  closeBlockMenu();
+  const line = state.card.lines.find(l => l.id === block.lineId) || null;
+  const evCount = (block.evidence || []).length;
+
+  blockMenuEl.innerHTML = `
+    <div class="block-menu__summary">${line ? 'Линия защиты: ' + line.title : 'Линия защиты не привязана'}</div>
+    ${line
+      ? '<button data-action="practice">Практика по линии защиты</button>'
+      : '<button data-action="bind-line">Привязать линию защиты</button>'}
+    <div class="block-menu__divider"></div>
+    <div class="block-menu__row"><span>Доказательства</span><span>${evCount}</span></div>
+    <button data-action="bind-evidence">Привязать доказательство</button>
+    <div class="block-menu__divider"></div>
+    <button data-action="rewrite">Переписать блок</button>
+    <button data-action="longer">Сделать подробнее</button>
+    <button data-action="shorter">Сделать короче</button>
+    <button data-action="ask-question">Задать вопрос по блоку</button>`;
+
+  blockMenuEl.hidden = false;
+  const r = anchorBtn.getBoundingClientRect();
+  const w = 300;
+  blockMenuEl.style.left = Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)) + 'px';
+  blockMenuEl.style.top = Math.min(r.bottom + 6, window.innerHeight - blockMenuEl.offsetHeight - 8) + 'px';
+
+  blockMenuEl.querySelectorAll('button[data-action]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const actionId = btn.dataset.action;
+      closeBlockMenu();
+      setActiveBlock(block.id);
+      if (actionId === 'ask-question') {
+        // 16.4: вопрос по блоку = активный блок + ввод вопроса в чат
+        promptEl.focus();
+        return;
+      }
+      onStarAction({ id: actionId, label: BLOCK_ACTION_LABELS[actionId], needsBlock: actionId !== 'practice' });
+    });
+  });
+}
+
+function closeBlockMenu() {
+  blockMenuEl.hidden = true;
+  blockMenuEl.innerHTML = '';
+}
+
+document.addEventListener('click', e => {
+  if (!blockMenuEl.contains(e.target) && !e.target.closest('.doc-block__star')) closeBlockMenu();
+});
+$('#doc-scroll').addEventListener('scroll', closeBlockMenu);
 
 const stripTags = html => {
   const d = document.createElement('div');
