@@ -200,19 +200,24 @@ function regenerateBlock(id, newText) {
   flashBlock(id);
 }
 
-/** Вставляет новый блок (после activeBlock или в конец), возвращает его id. */
-function insertBlock(text, { afterId, lineId } = {}) {
+/** Вставляет новый блок (в начало, после activeBlock или в конец), возвращает его id. */
+function insertBlock(text, { afterId, lineId, atStart, kind } = {}) {
   const n = state.blocks.length + 1;
   const block = {
     id: `block-new-${n}`,
     label: `Блок ${n}`,
     status: 'done',
     lineId: lineId || null,
+    kind: kind || null,
     html: text
   };
-  const idx = afterId ? state.blocks.findIndex(b => b.id === afterId) : -1;
-  if (idx >= 0) state.blocks.splice(idx + 1, 0, block);
-  else state.blocks.push(block);
+  if (atStart) {
+    state.blocks.unshift(block);
+  } else {
+    const idx = afterId ? state.blocks.findIndex(b => b.id === afterId) : -1;
+    if (idx >= 0) state.blocks.splice(idx + 1, 0, block);
+    else state.blocks.push(block);
+  }
   state.blocks.forEach((b, i) => { b.label = `Блок ${i + 1}`; });
   renderBlocks();
   flashBlock(block.id);
@@ -1103,7 +1108,34 @@ async function runGenByLines() {
     state.boundLines.add(line.id);
     addPlea(line.plea || PLEA_FALLBACK);
   });
-  endScenario(`Текст по ${unbound.length} ранее непривязанн${unbound.length === 1 ? 'ой линии' : 'ым линиям'} защиты вставлен в конец документа. Просительная часть обновлена.`);
+
+  // 17.3 Сутевая часть дела (фабула) — первым блоком после заголовка
+  let factsAdded = false;
+  if (state.card.episodes.length && !state.blocks.some(b => b.kind === 'facts')) {
+    setStep('17.3');
+    await think('Генерирую сутевую часть дела по фабуле', 1800);
+    insertBlock(composeFactsText(), { atStart: true, kind: 'facts' });
+    factsAdded = true;
+  }
+
+  setStep('17.4');
+  endScenario(
+    (factsAdded ? 'Сутевая часть по фабуле дела вставлена первым блоком. ' : '') +
+    `Текст по ${unbound.length} ранее непривязанн${unbound.length === 1 ? 'ой линии' : 'ым линиям'} защиты вставлен в конец документа. Просительная часть обновлена.`);
+}
+
+/** 17.3 — сутевая часть: фабула всех эпизодов дела. */
+function composeFactsText() {
+  const c = state.card;
+  const caseRef = c.court && c.court.caseNum ? ` № ${c.court.caseNum}` : '';
+  const client = c.clientDat || c.client;
+  const intro = `По уголовному делу${caseRef} моему доверителю${client ? ' ' + client : ''} вменяются следующие деяния.`;
+  const episodes = c.episodes.map((ep, i) => {
+    const text = ep.text.replace(/\s+/g, ' ').trim();
+    const sentences = text.split('. ');
+    return `По эпизоду ${i + 1}: ${sentences.slice(0, 2).join('. ')}${sentences.length > 1 ? '.' : ''}`;
+  }).join(' ');
+  return `${intro} ${episodes}`;
 }
 
 /* ================= Сценарий №14: справка ================= */
@@ -1259,7 +1291,7 @@ function runStarAction(action) {
       rewriteBlockAuto(block, 'longer');
       break;
     case 'rewrite':
-      startScenario('rewrite-block', 'Переписать блок');
+      startScenario('rewrite-block', 'Скорректировать блок');
       setStep('16.6');
       awaitText('Как хотите изменить текст блока?', text => onRewriteBlock(block, text));
       break;
@@ -1282,7 +1314,7 @@ const BLOCK_ACTION_LABELS = {
   'bind-line': 'Привязать линию защиты',
   'practice': 'Практика по линии защиты',
   'bind-evidence': 'Привязать доказательство',
-  'rewrite': 'Переписать блок',
+  'rewrite': 'Скорректировать блок',
   'longer': 'Сделать подробнее',
   'shorter': 'Сделать короче'
 };
@@ -1301,7 +1333,7 @@ function openBlockMenu(block, anchorBtn) {
     <div class="block-menu__row"><span>Доказательства</span><span>${evCount}</span></div>
     <button data-action="bind-evidence">Привязать доказательство</button>
     <div class="block-menu__divider"></div>
-    <button data-action="rewrite">Переписать блок</button>
+    <button data-action="rewrite">Скорректировать блок</button>
     <button data-action="longer">Сделать подробнее</button>
     <button data-action="shorter">Сделать короче</button>
     <button data-action="ask-question">Задать вопрос по блоку</button>`;
@@ -1366,7 +1398,7 @@ async function onRewriteBlock(block, request) {
   block.htmlBase = null;
   renderBlocks();
   flashBlock(block.id);
-  endScenario('Блок переписан согласно вашему запросу.');
+  endScenario('Блок скорректирован согласно вашему запросу.');
 }
 
 /* ---------- Модалки ---------- */
