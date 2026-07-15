@@ -20,6 +20,11 @@ const contextEl = $('#input-context');
 const promptEl = $('#prompt-input');
 const sendBtn = $('#btn-send');
 const attachBtn = $('#btn-attach');
+const assistantInputEl = $('#assistant-input');
+const scenarioBannerTitleEl = $('#scenario-banner-title');
+const scenarioBannerMenuBtn = $('#scenario-banner-menu');
+const scenarioBannerDropdown = $('#scenario-banner-dropdown');
+const scenarioAbortBtn = $('#scenario-abort');
 const topbarTitleEl = $('#topbar-title');
 const docTitleEl = $('#doc-title');
 const docHeaderBodyEl = $('#doc-header-body');
@@ -180,6 +185,7 @@ function renderDocHeader(lines) {
 /* ================= Чип контекста во вводе ================= */
 
 function renderContextChip() {
+  updateScenarioBanner();
   contextEl.innerHTML = '';
   if (!state.activeBlockId) return;
   const block = getBlock(state.activeBlockId);
@@ -199,6 +205,31 @@ function renderContextChip() {
   });
   contextEl.appendChild(chip);
 }
+
+/* ================= Баннер «Выполняется сценарий» ================= */
+
+function updateScenarioBanner() {
+  const sc = state.scenario;
+  assistantInputEl.classList.toggle('has-scenario', !!sc);
+  scenarioBannerTitleEl.textContent = sc ? sc.title : '';
+  scenarioBannerDropdown.classList.remove('is-open');
+}
+
+scenarioBannerMenuBtn.addEventListener('click', e => {
+  e.stopPropagation();
+  scenarioBannerDropdown.classList.toggle('is-open');
+});
+document.addEventListener('click', e => {
+  if (!scenarioBannerDropdown.contains(e.target)) scenarioBannerDropdown.classList.remove('is-open');
+});
+scenarioAbortBtn.addEventListener('click', () => {
+  const sc = state.scenario;
+  if (!sc) return;
+  if (sc.chipsEl) sc.chipsEl.classList.add('is-answered');
+  state.scenario = null;
+  renderContextChip();
+  addMessage('assistant', `Сценарий «${sc.title}» прерван. Уже выполненные действия не откатываются.`);
+});
 
 /* ================= Лента ассистента ================= */
 
@@ -348,6 +379,7 @@ function launchScenario(trigger) {
 function askInterrupt(actionTitle, onConfirm) {
   const sc = state.scenario;
   const savedSpec = sc.chipsSpec;
+  const savedEl = sc.chipsEl;
   const savedStage = sc.stage;
   const savedOnText = sc.onText;
   const savedReask = sc.reaskText;
@@ -367,6 +399,7 @@ function askInterrupt(actionTitle, onConfirm) {
       label: 'Прервать сценарий',
       onPick: () => {
         addMessage('user', 'Прервать сценарий');
+        if (savedEl) savedEl.classList.add('is-answered');
         const old = state.scenario;
         state.scenario = null;
         renderContextChip();
@@ -528,6 +561,7 @@ async function finalizeDocType(type, title) {
     sc.id = 'motion';
     sc.title = 'Подготовка ходатайства';
     sc.uninterruptible = false;
+    updateScenarioBanner();
     awaitText('Уточните: какие обстоятельства обосновывают ходатайство и о чём просим суд?', onMotionDetails);
     return;
   }

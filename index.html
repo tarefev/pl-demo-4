@@ -155,7 +155,19 @@
       </div>
 
       <!-- Ввод -->
-      <div class="assistant-input">
+      <div class="assistant-input" id="assistant-input">
+        <div class="scenario-banner" id="scenario-banner">
+          <div class="scenario-banner__text">
+            <div class="scenario-banner__label">Выполняется сценарий</div>
+            <div class="scenario-banner__title" id="scenario-banner-title"></div>
+          </div>
+          <button class="scenario-banner__menu" id="scenario-banner-menu" title="Действия со сценарием">
+            <svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.7" fill="currentColor"/><circle cx="12" cy="12" r="1.7" fill="currentColor"/><circle cx="19" cy="12" r="1.7" fill="currentColor"/></svg>
+          </button>
+          <div class="scenario-banner__dropdown" id="scenario-banner-dropdown">
+            <button id="scenario-abort">Прервать сценарий</button>
+          </div>
+        </div>
         <div class="assistant-input__context" id="input-context">
           <!-- чип привязанного блока рендерится из js/app.js -->
         </div>
