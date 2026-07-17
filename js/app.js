@@ -41,6 +41,7 @@ const state = {
   structure: null,     // активные плейсхолдеры структуры (DOC_STRUCTURE[type]) или null
   factsSource: null,   // как заполнены обстоятельства: 'card' | 'verdict' | 'own'
   boundLines: null,    // Set id линий, уже привязанных к блокам
+  warnExplained: false, // объяснение про «!» у блоков уже показано в чате
   activeBlockId: null,
   docType: null,       // { key, label } после стартового сценария
   scenario: null,      // { id, title, stage: 'choices'|'text', chipsSpec, chipsEl, onText, reaskText, uninterruptible }
@@ -74,6 +75,7 @@ function resetDemo(tabIndex) {
   state.structure = null;
   state.factsSource = null;
   state.boundLines = new Set();
+  state.warnExplained = false;
   state.activeBlockId = null;
   state.docType = null;
   state.scenario = null;
@@ -488,6 +490,16 @@ async function runPlaceholderAction(act) {
       addMessage('assistant', 'Заполните правовое обоснование самостоятельно в документе.');
       break;
   }
+}
+
+/** Разово поясняем в чате значок «!» у блоков, требующих завершения. */
+function maybeExplainWarnings() {
+  if (state.warnExplained) return;
+  if (!state.blocks.some(b => blockIssues(b).length)) return;
+  state.warnExplained = true;
+  const el = addMessage('assistant', '');
+  el.innerHTML = 'Значком <span class="msg-warn-icon">!</span> отмечены блоки текста, которые требуют завершения — например, в них не хватает доказательств. Чего именно не хватает, видно в сводке блока.';
+  scrollFeed();
 }
 
 /** Если признание известно по всем эпизодам — генерируем секцию автоматически. */
@@ -1530,6 +1542,7 @@ async function createLine6(episode, title, thesis) {
         state.boundLines.add(line.id);
         addPlea(line.plea || PLEA_FALLBACK);
         endScenario('Текст по линии добавлен после активного блока, просительная часть обновлена.');
+        maybeExplainWarnings();
       }
     });
   }
@@ -1543,6 +1556,7 @@ async function createLine6(episode, title, thesis) {
         state.boundLines.add(line.id);
         addPlea(line.plea || PLEA_FALLBACK);
         endScenario('Текст по линии добавлен в конец документа, просительная часть обновлена.');
+        maybeExplainWarnings();
       }
     },
     {
@@ -1594,6 +1608,7 @@ async function step15_1() {
           addPlea(line.plea || PLEA_FALLBACK);
         });
         addMessage('assistant', `Текст по ${unbound.length} лини${unbound.length === 1 ? 'и' : 'ям'} добавлен в документ, просительная часть обновлена.`);
+        maybeExplainWarnings();
         step15_rest();
       }
     },
@@ -1701,6 +1716,7 @@ async function runGenByLines() {
   endScenario(
     (factsAdded ? 'Сутевая часть по фабуле дела вставлена первым блоком. ' : '') +
     `Текст по ${unbound.length} ранее непривязанн${unbound.length === 1 ? 'ой линии' : 'ым линиям'} защиты вставлен в конец документа. Просительная часть обновлена.`);
+  maybeExplainWarnings();
 }
 
 /** 17.3 — сутевая часть: фабула всех эпизодов дела. */
