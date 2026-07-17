@@ -84,6 +84,12 @@ function resetDemo(tabIndex) {
   autosize();
   setBusy(false);
 
+  const cb = $('#text-only-cb');
+  if (cb) {
+    cb.checked = false;
+    document.body.classList.remove('text-only');
+  }
+
   topbarTitleEl.textContent = 'Новый документ';
   docTitleEl.textContent = 'Новый документ';
   docHeaderBodyEl.innerHTML = '<p class="placeholder">Шапка документа сформируется после выбора типа</p>';
@@ -148,8 +154,8 @@ function buildBlockMeta(block) {
   }
 
   const rightHtml = isCtor ? `
-    <button class="meta-regen" data-special="regen" ${block.dirty ? '' : 'disabled'}>Перегенерировать</button>
-    <button data-special="ctor-toggle">${block.constructorDone ? 'Открыть конструктор' : 'Завершить конструктор для блока'}</button>` : '';
+    <button class="meta-regen${block.constructorDone ? ' is-hidden' : ''}" data-special="regen" ${block.dirty ? '' : 'disabled'}>Перегенерировать</button>
+    <button data-special="ctor-toggle">${block.constructorDone ? 'Открыть конструктор' : 'Закрыть конструктор для блока'}</button>` : '';
 
   meta.innerHTML = `
     ${flagsHtml ? `<div class="doc-block__flags">${flagsHtml}</div>` : ''}
@@ -245,7 +251,7 @@ function toggleConstructor(block) {
   block.constructorDone = !block.constructorDone;
   renderBlocks();
   addMessage('assistant', block.constructorDone
-    ? `Конструктор ${block.label} завершён — структура скрыта. Сводка и кнопки управления остались, вернуть можно кнопкой «Открыть конструктор».`
+    ? `Конструктор ${block.label} закрыт — сводка и кнопки управления остались, вернуть можно кнопкой «Открыть конструктор».`
     : `Конструктор ${block.label} снова открыт.`);
 }
 
@@ -261,17 +267,23 @@ function renderBlocks() {
     el.className = 'doc-block' + (block.id === state.activeBlockId ? ' is-active' : '');
     el.dataset.blockId = block.id;
 
+    // метка и статус в sticky-обёртке: прилипают при скролле длинного блока
     const headHtml = `
-      <span class="doc-block__label" contenteditable="false">${block.label}</span>
-      <button class="doc-block__status ${issuesOk ? 'is-done' : ''}"
-              contenteditable="false" title="${issuesOk ? 'Готово' : 'По сводке блока чего-то не хватает'}" tabindex="-1"></button>`;
+      <div class="doc-block__pin" contenteditable="false">
+        <span class="doc-block__label">${block.label}</span>
+        <button class="doc-block__status ${issuesOk ? 'is-done' : ''}"
+                title="${issuesOk ? 'Готово' : 'По сводке блока чего-то не хватает'}" tabindex="-1"></button>
+      </div>`;
 
     if (block.parts && block.parts.length) {
-      // конструкторный блок: конструктор -> сводка/кнопки -> сгенерированный текст
+      // конструкторный блок: сводка/кнопки -> конструктор -> сгенерированный текст
+      // (кнопки сверху, чтобы «Закрыть/Открыть конструктор» не меняла положение)
       el.contentEditable = 'false';
       el.innerHTML = headHtml;
+      const meta = buildBlockMeta(block);
+      meta.classList.add('doc-block__meta--top');
+      el.appendChild(meta);
       if (!block.constructorDone) el.appendChild(buildConstructor(block));
-      el.appendChild(buildBlockMeta(block));
       el.appendChild(buildGenerated(block));
     } else {
       el.contentEditable = 'true';
@@ -280,8 +292,7 @@ function renderBlocks() {
       // правки пользователя в редакторе сохраняются в стейт и переживают перерисовку
       el.addEventListener('input', () => {
         const copy = el.cloneNode(true);
-        copy.querySelector('.doc-block__label')?.remove();
-        copy.querySelector('.doc-block__status')?.remove();
+        copy.querySelector('.doc-block__pin')?.remove();
         copy.querySelector('.doc-block__meta')?.remove();
         block.html = copy.innerHTML;
         updateChecklist();
@@ -442,6 +453,7 @@ async function runPlaceholderAction(act) {
       await think('Формирую описание обстоятельств из карточки дела', 1600);
       insertBlock(composeFactsText(), { atStart: true, section: 'facts', kind: 'facts' });
       addMessage('assistant', 'Обстоятельства дела заполнены из карточки дела.');
+      await maybeAutoAdmission();
       break;
 
     case 'facts-verdict':
@@ -476,6 +488,20 @@ async function runPlaceholderAction(act) {
       addMessage('assistant', 'Заполните правовое обоснование самостоятельно в документе.');
       break;
   }
+}
+
+/** Если признание известно по всем эпизодам — генерируем секцию автоматически. */
+async function maybeAutoAdmission() {
+  if (!state.structure || !state.structure.some(p => p.kind === 'admission')) return false;
+  if (state.blocks.some(b => (b.section || 'defense') === 'admission')) return false;
+  if (!factsFilled()) return false;
+  const eps = state.card.episodes;
+  if (!eps.length || !eps.every(ep => ep.admission)) return false;
+
+  await think('Формирую позицию по вине по эпизодам', 1200);
+  insertBlock(composeAdmissionText(), { section: 'admission', kind: 'admission' });
+  addMessage('assistant', 'Признание заполнено автоматически по данным карточки дела.');
+  return true;
 }
 
 /** Блок «Признание»: по эпизодам, неизвестные значения — тёмно-жёлтым маркером. */
@@ -1668,6 +1694,9 @@ async function runGenByLines() {
     insertBlock(composeVerdictText(), { atStart: true, section: 'verdict', kind: 'verdict' });
   }
 
+  // признание известно по карточке — заполняем автоматически
+  await maybeAutoAdmission();
+
   setStep('17.4');
   endScenario(
     (factsAdded ? 'Сутевая часть по фабуле дела вставлена первым блоком. ' : '') +
@@ -2130,6 +2159,13 @@ promptEl.addEventListener('keydown', e => {
 });
 sendBtn.addEventListener('click', sendPrompt);
 attachBtn.addEventListener('click', onAttachClick);
+
+/* ================= Режим «только текст документа» ================= */
+
+const textOnlyCb = $('#text-only-cb');
+textOnlyCb.addEventListener('change', () => {
+  document.body.classList.toggle('text-only', textOnlyCb.checked);
+});
 
 /* ================= Шапка ================= */
 
