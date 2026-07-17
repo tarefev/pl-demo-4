@@ -352,6 +352,124 @@ button {
   box-shadow: inset 0 0 0 1px #cdd7fb;
 }
 
+/* Подподблоки аргументов */
+.doc-args {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.doc-args__stale {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #fdf3e0;
+  border: 1px solid #f0ddb0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #9a6b00;
+}
+.doc-args__stale button {
+  background: #9a6b00;
+  color: #fff;
+  border-radius: 7px;
+  padding: 4px 10px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.doc-args__stale button:hover { background: #7d5600; }
+.doc-arg {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+}
+.doc-arg__text {
+  flex: 1;
+  outline: none;
+  line-height: 1.5;
+  border-radius: 4px;
+}
+.doc-arg__text:focus { background: #e3e9fd; }
+.doc-arg__text:empty::before {
+  content: "Введите аргумент…";
+  color: var(--text-muted);
+  font-style: italic;
+}
+.doc-arg__src {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--accent);
+  background: var(--accent-soft-2);
+  border-radius: 5px;
+  padding: 2px 6px;
+  margin-top: 2px;
+  white-space: nowrap;
+}
+.doc-arg__src--manual {
+  color: var(--text-muted);
+  background: #f1f2f6;
+}
+.doc-arg__del {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 14px;
+  line-height: 1;
+}
+.doc-arg__del:hover { background: #fdf0f0; color: var(--danger); }
+.doc-arg__add {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--accent);
+  padding: 4px 8px;
+  border-radius: 7px;
+}
+.doc-arg__add:hover { background: var(--accent-soft-2); }
+
+/* группы в модалке аргументов */
+.args-group { display: flex; flex-direction: column; gap: 8px; }
+.args-group + .args-group { margin-top: 6px; }
+.args-group__title {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--text-muted);
+}
+
+/* кликабельные нормы права */
+.norm-link {
+  color: var(--accent);
+  border-bottom: 1px dashed var(--accent);
+  cursor: pointer;
+}
+.norm-link:hover { background: var(--accent-soft-2); }
+.norm-view__title { font-weight: 700; margin-bottom: 8px; }
+
+/* кнопка удаления блока */
+.doc-block__tools .meta-del {
+  color: var(--danger);
+  background: #fdf0f0;
+  border-color: #f5d5d5;
+}
+.doc-block__tools .meta-del:hover { background: #fbe2e2; }
+
+/* пустой подблок «Другие факты и доводы» */
+.doc-sub__body:empty::before {
+  content: attr(data-ph);
+  color: var(--text-muted);
+  font-style: italic;
+}
+
 /* Сгенерированный текст под конструктором */
 .doc-generated {
   margin-top: 12px;
@@ -431,6 +549,21 @@ button {
   padding: 3px 9px;
 }
 .doc-block__tools button:hover { background: var(--accent-soft); }
+.doc-block__tools .meta-btn--warn {
+  background: #fdf3e0;
+  border-color: #f0ddb0;
+  color: #9a6b00;
+}
+.doc-block__tools .meta-btn--warn::before { content: "⚠ "; }
+.doc-block__tools .meta-btn--warn:hover { background: #fae9c8; }
+.doc-block__tools .meta-btn--line {
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.modal-sub { color: var(--text-muted); }
+
 .doc-block__tools .meta-regen {
   background: var(--accent);
   border-color: var(--accent);
@@ -609,6 +742,65 @@ button {
 .check-item--warn { color: #9a6b00; }
 .check-item--empty { color: var(--text-muted); }
 
+/* --- Точки вставки нового блока (итерация 4) --- */
+.doc-insert {
+  position: relative;
+  height: 12px;
+}
+.doc-insert__line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity .12s;
+}
+.doc-insert__btn {
+  position: absolute;
+  left: -32px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.doc-insert:hover .doc-insert__btn { opacity: 1; }
+.doc-insert:hover .doc-insert__line { opacity: .3; }
+.doc-insert__btn:hover { background: var(--accent); color: #fff; }
+
+.doc-add-block {
+  display: block;
+  width: 100%;
+  margin: 10px 0 4px;
+  padding: 9px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  text-align: center;
+}
+.doc-add-block:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft-2);
+}
+
+body.text-only .doc-insert,
+body.text-only .doc-add-block { display: none !important; }
+
 .doc-empty {
   border: 1px dashed var(--border-strong);
   border-radius: 10px;
@@ -628,7 +820,7 @@ button {
 
 /* ============ Панель ассистента ============ */
 .assistant-pane {
-  width: 570px;
+  width: 456px;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -718,6 +910,45 @@ button {
   font-weight: 700;
 }
 .msg--file svg { width: 16px; height: 16px; flex: none; }
+/* карточка-сообщение (отчёт) и акцентное сообщение «что дальше» */
+.msg--card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 11px 13px;
+  box-shadow: 0 1px 2px rgba(20, 24, 40, .05);
+}
+.msg-card__title {
+  font-weight: 700;
+  margin-bottom: 7px;
+}
+.msg--card ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msg--accent {
+  background: var(--accent-soft-2);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 11px 13px;
+}
+.msg-accent__title {
+  font-weight: 700;
+  color: var(--accent);
+  margin-bottom: 7px;
+}
+.msg--accent ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
 /* графический «!» внутри сообщения чата — как значок у блоков */
 .msg-warn-icon {
   display: inline-flex;
@@ -1158,7 +1389,7 @@ body.text-only .doc-generated {
 
 /* ============ Адаптив ============ */
 @media (max-width: 1100px) {
-  .assistant-pane { width: 480px; }
+  .assistant-pane { width: 385px; }
   .doc-scroll { padding: 20px 24px 60px; }
   .doc-block__status { right: -20px; }
   .doc-block__star { right: -21px; }

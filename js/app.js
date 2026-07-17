@@ -43,6 +43,7 @@ const state = {
   boundLines: null,    // Set id линий, уже привязанных к блокам
   warnExplained: false, // объяснение про «!» у блоков уже показано в чате
   activeBlockId: null,
+  activeSubpart: null, // { blockId, key, title } — подблок конструктора в контексте чата
   docType: null,       // { key, label } после стартового сценария
   scenario: null,      // { id, title, stage: 'choices'|'text', chipsSpec, chipsEl, onText, reaskText, uninterruptible }
   busy: false
@@ -76,6 +77,7 @@ function resetDemo(tabIndex) {
   state.factsSource = null;
   state.boundLines = new Set();
   state.warnExplained = false;
+  state.activeSubpart = null;
   state.activeBlockId = null;
   state.docType = null;
   state.scenario = null;
@@ -121,6 +123,7 @@ function blockIssues(block) {
   const issues = [];
   if (!block.lineId) issues.push('нет линии защиты', 'нет аргументов');
   if (!(block.evidence && block.evidence.length)) issues.push('нет доказательств');
+  if (block.argsStale) issues.push('аргументы не обновлены');
   return issues;
 }
 
@@ -136,35 +139,35 @@ function buildBlockMeta(block) {
 
   const isCtor = !!(block.parts && block.parts.length);
   const isDefense = (block.section || 'defense') === 'defense' || isCtor;
-  let flagsHtml = '';
-  let toolsLeft;
+  let barBtns;
 
   if (isDefense) {
     const line = state.card.lines.find(l => l.id === block.lineId) || null;
     const evCount = (block.evidence || []).length;
-    flagsHtml = `
-      <span class="meta-flag ${line ? '' : 'meta-flag--warn'}">${line ? 'Линия: ' + shortLineTitle(line.title) : 'Линия защиты не привязана'}</span>
-      <span class="meta-flag ${evCount ? '' : 'meta-flag--warn'}">${evCount ? 'Доказательства: ' + evCount : 'Нет привязанных доказательств'}</span>
-      <span class="meta-flag ${line ? '' : 'meta-flag--warn'}">${line ? 'Аргументы: есть' : 'Нет аргументов'}</span>`;
-    toolsLeft = [
-      line ? ['practice', 'Практика'] : ['bind-line', 'Привязать линию'],
-      ['bind-evidence', 'Доказательства'],
-      ['rewrite', 'Редактировать с ИИ']
+    const argsPart = block.parts ? block.parts.find(p => p.key === 'arguments') : null;
+    const argsOk = !!(argsPart && stripTags(argsPart.html).trim());
+    // все флаги-кнопки и действия — в одну линию
+    barBtns = [
+      ['line-modal', line ? 'Линия: ' + shortLineTitle(line.title) : 'Линия защиты не привязана', !line, 'meta-btn--line'],
+      ['evidence-modal', evCount ? 'Доказательства: ' + evCount : 'Нет привязанных доказательств', !evCount, ''],
+      ['args-modal', argsOk ? 'Аргументы: есть' : 'Нет аргументов', !argsOk, ''],
+      ['practice-modal', 'Практика', false, ''],
+      ['rewrite', 'Редактировать с ИИ', false, '']
     ];
   } else {
-    toolsLeft = [['rewrite', 'Редактировать с ИИ']];
+    barBtns = [['rewrite', 'Редактировать с ИИ', false, '']];
   }
 
-  const rightHtml = isCtor ? `
-    <button class="meta-regen${block.constructorDone ? ' is-hidden' : ''}" data-special="regen" ${block.dirty ? '' : 'disabled'}>Перегенерировать</button>
-    <button data-special="ctor-toggle">${block.constructorDone ? 'Открыть конструктор' : 'Закрыть конструктор для блока'}</button>` : '';
+  const rightHtml = (isCtor ? `
+    <button class="meta-regen" data-special="regen" ${block.dirty ? '' : 'disabled'}>Перегенерировать</button>
+    <button data-special="ctor-toggle">${block.constructorDone ? 'Открыть конструктор' : 'Закрыть конструктор для блока'}</button>` : '')
+    + '<button class="meta-del" data-special="delete" title="Удалить блок">Удалить</button>';
 
   meta.innerHTML = `
-    ${flagsHtml ? `<div class="doc-block__flags">${flagsHtml}</div>` : ''}
     <div class="doc-block__tools">
-      <div class="doc-block__tools-left">${toolsLeft.map(([id, label]) =>
-        `<button data-tool="${id}">${label}</button>`).join('')}</div>
-      ${rightHtml ? `<div class="doc-block__tools-right">${rightHtml}</div>` : ''}
+      <div class="doc-block__tools-left">${barBtns.map(([id, label, warn, cls]) =>
+        `<button data-tool="${id}" class="${warn ? 'meta-btn--warn' : ''} ${cls}" title="${label}">${label}</button>`).join('')}</div>
+      <div class="doc-block__tools-right">${rightHtml}</div>
     </div>`;
 
   meta.querySelectorAll('button[data-tool]').forEach(btn => {
@@ -172,11 +175,17 @@ function buildBlockMeta(block) {
       e.stopPropagation();
       const id = btn.dataset.tool;
       setActiveBlock(block.id);
-      if (id === 'ask-question') {
-        promptEl.focus();
-        return;
+      if (state.busy) return;
+      switch (id) {
+        case 'line-modal': openLineModal(block); return;
+        case 'args-modal': openArgsModal(block); return;
+        case 'practice-modal': openPracticeModal(block); return;
+        case 'evidence-modal':
+          onStarAction({ id: 'bind-evidence', label: BLOCK_ACTION_LABELS['bind-evidence'], needsBlock: true });
+          return;
+        default:
+          onStarAction({ id, label: BLOCK_ACTION_LABELS[id] || btn.textContent, needsBlock: id !== 'practice' });
       }
-      onStarAction({ id, label: BLOCK_ACTION_LABELS[id] || btn.textContent, needsBlock: id !== 'practice' });
     });
   });
   meta.querySelector('[data-special="regen"]')?.addEventListener('click', e => {
@@ -187,7 +196,39 @@ function buildBlockMeta(block) {
     e.stopPropagation();
     toggleConstructor(block);
   });
+  meta.querySelector('[data-special="delete"]')?.addEventListener('click', e => {
+    e.stopPropagation();
+    confirmDeleteBlock(block);
+  });
   return meta;
+}
+
+/** Удаление блока с подтверждением. */
+function confirmDeleteBlock(block) {
+  openModal({
+    title: 'Удаление блока',
+    bodyHtml: `Удалить ${block.label} из документа?`,
+    buttons: [
+      { label: 'Отмена' },
+      {
+        label: 'Удалить',
+        primary: true,
+        onClick: () => {
+          closeModal();
+          const label = block.label;
+          const idx = state.blocks.indexOf(block);
+          if (idx >= 0) state.blocks.splice(idx, 1);
+          if (state.activeBlockId === block.id) {
+            state.activeBlockId = null;
+            state.activeSubpart = null;
+          }
+          renderBlocks();
+          renderContextChip();
+          addMessage('assistant', `${label} удалён из документа.`);
+        }
+      }
+    ]
+  });
 }
 
 /** Конструктор: подблоки-сущности с отдельными заголовками, редактируются по одному. */
@@ -198,18 +239,170 @@ function buildConstructor(block) {
   block.parts.forEach(part => {
     const sub = document.createElement('div');
     sub.className = 'doc-sub';
+
+    if (part.key === 'arguments') {
+      sub.innerHTML = `<div class="doc-sub__title" contenteditable="false">${part.title}</div>`;
+      sub.appendChild(buildArgsEditor(block));
+      sub.addEventListener('click', e => {
+        e.stopPropagation();
+        setActiveBlock(block.id);
+        setActiveSubpart({ blockId: block.id, key: 'arguments', title: 'Аргументы' });
+      });
+      ctor.appendChild(sub);
+      return;
+    }
+
+    const bodyHtml = part.key === 'norms' ? linkifyNorms(part.html) : part.html;
     sub.innerHTML = `
       <div class="doc-sub__title" contenteditable="false">${part.title}</div>
-      <div class="doc-sub__body" contenteditable="true">${part.html}</div>`;
+      <div class="doc-sub__body" contenteditable="true"${part.key === 'other' ? ' data-ph="Добавьте свободные факты и доводы…"' : ''}>${bodyHtml}</div>`;
     const body = sub.querySelector('.doc-sub__body');
     body.addEventListener('input', () => {
       part.html = body.innerHTML;
-      markDirty(block, part.title);
+      markDirty(block, part.title, part.key);
+    });
+    // клик по подблоку кладёт его в контекст чата — можно отредактировать с ИИ
+    body.addEventListener('click', e => {
+      e.stopPropagation();
+      setActiveBlock(block.id);
+      setActiveSubpart({ blockId: block.id, key: part.key, title: part.title });
     });
     ctor.appendChild(sub);
   });
   return ctor;
 }
+
+/** Редактор аргументов: подподблоки с источниками, удалением и добавлением. */
+function buildArgsEditor(block) {
+  const wrap = document.createElement('div');
+  wrap.className = 'doc-args';
+
+  if (block.argsStale) {
+    const banner = document.createElement('div');
+    banner.className = 'doc-args__stale';
+    banner.innerHTML = '<span>Данные обновлены</span><button type="button">Обновить аргументы</button>';
+    banner.querySelector('button').addEventListener('click', e => {
+      e.stopPropagation();
+      refreshArguments(block);
+    });
+    wrap.appendChild(banner);
+  }
+
+  (block.argsList || []).forEach((arg, i) => {
+    const item = document.createElement('div');
+    item.className = 'doc-arg';
+    item.innerHTML = `
+      <div class="doc-arg__text" contenteditable="true">${arg.text}</div>
+      <span class="doc-arg__src${arg.auto ? '' : ' doc-arg__src--manual'}">${arg.auto ? 'авто · ' + (SRC_LABELS[arg.source] || 'факт') : 'вручную'}</span>
+      <button class="doc-arg__del" title="Удалить аргумент" type="button">×</button>`;
+    const text = item.querySelector('.doc-arg__text');
+    text.addEventListener('input', () => {
+      arg.text = text.innerText;
+      syncArgsPart(block);
+      markDirty(block, 'Аргументы', 'arguments');
+    });
+    item.querySelector('.doc-arg__del').addEventListener('click', e => {
+      e.stopPropagation();
+      block.argsList.splice(i, 1);
+      syncArgsPart(block);
+      block.dirty = true;
+      block.dirtyNotified = true;
+      renderBlocks();
+      addMessage('assistant', `Аргумент удалён из ${labelGen(block.label)}. Кнопка «Перегенерировать» активна.`);
+    });
+    wrap.appendChild(item);
+  });
+
+  const add = document.createElement('button');
+  add.className = 'doc-arg__add';
+  add.type = 'button';
+  add.textContent = '+ Добавить аргумент';
+  add.addEventListener('click', e => {
+    e.stopPropagation();
+    block.argsList = block.argsList || [];
+    block.argsList.push({ text: '', source: null, auto: false, poolIdx: null });
+    renderBlocks();
+    const items = document.querySelectorAll(`.doc-block[data-block-id="${block.id}"] .doc-arg__text`);
+    const last = items[items.length - 1];
+    if (last) last.focus();
+  });
+  wrap.appendChild(add);
+
+  return wrap;
+}
+
+/** Обновление аргументов после изменения связанных данных (источников). */
+async function refreshArguments(block) {
+  if (state.busy) return;
+  await think(`Обновляю аргументы ${labelGen(block.label)}`, 1500);
+
+  const hasPractice = !!(block.parts && block.parts.find(p => p.key === 'practice'));
+  const hasCirc = !!(block.parts && block.parts.find(p => p.key === 'circumstances'));
+  block.argsList = (block.argsList || []).filter(a => {
+    if (!a.auto) return true;
+    if (a.source === 'practice' && !hasPractice) return false;
+    if (a.source === 'circumstances' && !hasCirc) return false;
+    return true;
+  });
+  if ((block.evidence || []).length && !block.argsList.some(a => a.source === 'evidence')) {
+    block.argsList.push({ text: 'Позиция защиты подтверждается приобщёнными доказательствами, исследованными в судебном заседании.', source: 'evidence', auto: true, poolIdx: null });
+  }
+  block.argsStale = false;
+  syncArgsPart(block);
+  block.dirty = true;
+  block.dirtyNotified = true;
+  renderBlocks();
+  flashBlock(block.id);
+  addMessage('assistant', `Аргументы ${labelGen(block.label)} обновлены с учётом изменённых данных. Проверьте состав и нажмите «Перегенерировать».`);
+}
+
+/** Пометить аргументы устаревшими (изменился связанный подблок) без перерисовки. */
+function markArgsStale(block) {
+  if (!block.parts || block.argsStale) return;
+  block.argsStale = true;
+  const el = document.querySelector(`.doc-block[data-block-id="${block.id}"] .doc-args`);
+  if (el && !el.querySelector('.doc-args__stale')) {
+    const banner = document.createElement('div');
+    banner.className = 'doc-args__stale';
+    banner.innerHTML = '<span>Данные обновлены</span><button type="button">Обновить аргументы</button>';
+    banner.querySelector('button').addEventListener('click', e => {
+      e.stopPropagation();
+      refreshArguments(block);
+    });
+    el.prepend(banner);
+  }
+  updateChecklist();
+}
+
+/** Кликабельные нормы права в «Нормативной опоре». */
+function linkifyNorms(html) {
+  if (!html || html.includes('norm-link')) return html;
+  let out = html;
+  Object.keys(NORMS_DB).sort((a, b) => b.length - a.length).forEach(k => {
+    out = out.split(k).join(`<span class="norm-link" data-norm="${k}">${k}</span>`);
+  });
+  return out;
+}
+
+function openNormModal(key) {
+  const db = NORMS_DB[key];
+  if (!db) return;
+  openModal({
+    title: `Нормативная база · ${db.act}`,
+    bodyHtml: `<div class="norm-view"><div class="norm-view__title">${db.title}</div><p>${db.text}</p></div>`,
+    buttons: [{ label: 'Закрыть' }]
+  });
+}
+
+// capture-фаза: клики подблоков гасят всплытие, а норма должна открыться в любом случае
+docBlocksEl.addEventListener('click', e => {
+  const link = e.target.closest('.norm-link');
+  if (link) {
+    e.stopPropagation();
+    e.preventDefault();
+    openNormModal(link.dataset.norm);
+  }
+}, true);
 
 /** Подблок сгенерированного текста (снизу); пустой — с ручным вводом. */
 function buildGenerated(block) {
@@ -226,35 +419,39 @@ function buildGenerated(block) {
   return gen;
 }
 
+/** «Блок 3» → «Блока 3» для отбивок в чат. */
+const labelGen = label => (label || '').replace(/^Блок /, 'Блока ');
+
 /** Ручное изменение конструктора: активируем «Перегенерировать», одно уведомление в чат. */
-function markDirty(block, what) {
+function markDirty(block, what, partKey) {
   block.dirty = true;
   const btn = document.querySelector(`.doc-block[data-block-id="${block.id}"] .meta-regen`);
   if (btn) btn.disabled = false;
+  // связанные с аргументами подблоки изменились — аргументы требуют обновления
+  if (partKey && partKey !== 'arguments' && ['norms', 'practice', 'circumstances', 'other', 'evidence'].includes(partKey)) {
+    markArgsStale(block);
+  }
   if (!block.dirtyNotified) {
     block.dirtyNotified = true;
-    addMessage('assistant', `Изменён конструктор ${block.label}: ${what.toLowerCase()}. Кнопка «Перегенерировать» стала активна.`);
+    addMessage('assistant', `Изменён конструктор ${labelGen(block.label)}: ${what.toLowerCase()}. Кнопка «Перегенерировать» стала активна.`);
   }
   updateChecklist();
 }
 
 async function onRegenerateClick(block) {
   if (state.busy || !block.dirty) return;
-  await think(`Перегенерирую текст ${block.label}`, 1800);
+  await think(`Перегенерирую текст ${labelGen(block.label)}`, 1800);
   block.generated = generateFromParts(block.parts);
   block.dirty = false;
   block.dirtyNotified = false;
   renderBlocks();
   flashBlock(block.id);
-  addMessage('assistant', `Текст ${block.label} перегенерирован по данным конструктора.`);
+  addMessage('assistant', `Текст ${labelGen(block.label)} перегенерирован по данным конструктора.`);
 }
 
 function toggleConstructor(block) {
   block.constructorDone = !block.constructorDone;
   renderBlocks();
-  addMessage('assistant', block.constructorDone
-    ? `Конструктор ${block.label} закрыт — сводка и кнопки управления остались, вернуть можно кнопкой «Открыть конструктор».`
-    : `Конструктор ${block.label} снова открыт.`);
 }
 
 function renderBlocks() {
@@ -302,16 +499,43 @@ function renderBlocks() {
     }
 
     el.addEventListener('focusin', () => setActiveBlock(block.id));
-    el.addEventListener('click', () => setActiveBlock(block.id));
+    el.addEventListener('click', () => {
+      setActiveBlock(block.id);
+      if (state.activeSubpart && state.activeSubpart.blockId === block.id) setActiveSubpart(null);
+    });
     docBlocksEl.appendChild(el);
+  };
+
+  // точка вставки нового блока между блоками (появляется при наведении, «+» слева)
+  const addInsertZone = afterBlock => {
+    const z = document.createElement('div');
+    z.className = 'doc-insert';
+    z.contentEditable = 'false';
+    z.innerHTML = '<div class="doc-insert__line"></div><button class="doc-insert__btn" title="Создать блок здесь">+</button>';
+    z.querySelector('button').addEventListener('click', e => {
+      e.stopPropagation();
+      insertEmptyBlock(afterBlock.id, afterBlock.section || 'defense');
+    });
+    docBlocksEl.appendChild(z);
+  };
+
+  // постоянная точка вставки в конце, перед просительной частью
+  const appendAddBlockButton = () => {
+    const btn = document.createElement('button');
+    btn.className = 'doc-add-block';
+    btn.textContent = '+ Новый блок';
+    btn.title = 'Добавить блок в конец документа, перед просительной частью';
+    btn.addEventListener('click', () => insertEmptyBlock(null, 'defense'));
+    docBlocksEl.appendChild(btn);
   };
 
   if (!state.structure) {
     if (!state.blocks.length) {
       docBlocksEl.innerHTML = '<div class="doc-empty">В документе пока нет блоков — текст появится по мере работы сценариев</div>';
     } else {
-      state.blocks.forEach(renderBlockEl);
+      state.blocks.forEach(b => { renderBlockEl(b); addInsertZone(b); });
     }
+    appendAddBlockButton();
     updateChecklist();
     return;
   }
@@ -321,10 +545,21 @@ function renderBlocks() {
   SECTION_ORDER.forEach(sec => {
     const secBlocks = state.blocks.filter(b => (b.section || 'defense') === sec);
     const ph = state.structure.find(p => p.kind === sec);
-    if (secBlocks.length) secBlocks.forEach(renderBlockEl);
+    if (secBlocks.length) secBlocks.forEach(b => { renderBlockEl(b); addInsertZone(b); });
     else if (ph && !ph.template) docBlocksEl.appendChild(buildPlaceholder(ph));
   });
+  appendAddBlockButton();
   updateChecklist();
+}
+
+/** Пустой блок в указанном месте: сразу активен, можно печатать или привязать линию. */
+function insertEmptyBlock(afterId, section) {
+  const opts = afterId ? { afterId, section, kind: 'manual' } : { section, kind: 'manual' };
+  const id = insertBlock('', opts);
+  setActiveBlock(id);
+  const el = document.querySelector(`.doc-block[data-block-id="${id}"]`);
+  if (el) el.focus();
+  addMessage('assistant', `Добавлен пустой ${getBlock(id).label} — введите текст прямо в документе или привяжите линию защиты.`);
 }
 
 /* ================= Просительная часть ================= */
@@ -503,7 +738,7 @@ function maybeExplainWarnings() {
 }
 
 /** Если признание известно по всем эпизодам — генерируем секцию автоматически. */
-async function maybeAutoAdmission() {
+async function maybeAutoAdmission({ silent } = {}) {
   if (!state.structure || !state.structure.some(p => p.kind === 'admission')) return false;
   if (state.blocks.some(b => (b.section || 'defense') === 'admission')) return false;
   if (!factsFilled()) return false;
@@ -512,7 +747,7 @@ async function maybeAutoAdmission() {
 
   await think('Формирую позицию по вине по эпизодам', 1200);
   insertBlock(composeAdmissionText(), { section: 'admission', kind: 'admission' });
-  addMessage('assistant', 'Признание заполнено автоматически по данным карточки дела.');
+  if (!silent) addMessage('assistant', 'Признание заполнено автоматически по данным карточки дела.');
   return true;
 }
 
@@ -550,10 +785,11 @@ function updateChecklist() {
 
   const items = [];
 
-  // шапка — обязательно
+  // шапка — обязательно; незавершённое заполнение (плейсхолдеры) подсвечиваем жёлтым
   const headerHtml = docHeaderBodyEl.innerHTML;
-  const headerEmpty = /вставить|placeholder/i.test(headerHtml);
-  items.push({ label: 'Шапка', st: headerEmpty ? 'empty' : 'done' });
+  const headerHasPh = /ph-mark|вставить/i.test(headerHtml);
+  const headerEmpty = /placeholder/i.test(headerHtml);
+  items.push({ label: 'Шапка', st: headerEmpty ? 'empty' : headerHasPh ? 'warn' : 'done' });
 
   state.structure.forEach(ph => {
     if (ph.kind === 'pleas') {
@@ -565,15 +801,17 @@ function updateChecklist() {
       items.push({ label: ph.title, st: 'empty' });
       return;
     }
-    // текстовые плейсхолдеры внутри — показываем как незаполненное
-    if (secBlocks.some(b => hasTextPlaceholder(b.html))) {
-      items.push({ label: ph.title, st: 'empty' });
+    // текстовые плейсхолдеры внутри — заполнение не завершено, жёлтым
+    const blockHasPh = b => hasTextPlaceholder(b.html) ||
+      (b.parts && b.parts.some(p => hasTextPlaceholder(p.html))) ||
+      hasTextPlaceholder(b.generated);
+    if (secBlocks.some(blockHasPh)) {
+      items.push({ label: ph.title, st: 'warn' });
       return;
     }
     if (ph.kind === 'defense') {
-      const allBound = secBlocks.every(b => b.lineId);
-      const allEvidence = secBlocks.every(b => b.evidence && b.evidence.length);
-      items.push({ label: ph.title, st: allBound && allEvidence ? 'done' : 'warn' });
+      const issuesFree = secBlocks.every(b => !blockIssues(b).length);
+      items.push({ label: ph.title, st: issuesFree ? 'done' : 'warn' });
       return;
     }
     items.push({ label: ph.title, st: 'done' });
@@ -585,19 +823,55 @@ function updateChecklist() {
   ).join('');
 }
 
-/** Подблоки конструктора по линии защиты (итерация 2). */
-function buildLineParts(line) {
+/** Метки источников аргументов. */
+const SRC_LABELS = {
+  practice: 'практика',
+  circumstances: 'обстоятельства',
+  norms: 'нормативка',
+  evidence: 'доказательства',
+  fact: 'факт'
+};
+
+/** Стартовый список аргументов по линии: первые два из пула, авто. */
+function defaultArgsList(line) {
+  const pool = line.argumentsPool || [];
+  if (!pool.length) {
+    const text = (line.argument || line.thesis || REGEN_FALLBACK_TEXT).replace(/\s+/g, ' ').trim();
+    return [{ text, source: 'fact', auto: true, poolIdx: null }];
+  }
+  return pool.slice(0, 2).map((a, i) => ({ text: a.text, source: a.source, auto: true, poolIdx: i }));
+}
+
+/** Синхронизация подблока «Аргументы» с списком аргументов блока. */
+function syncArgsPart(block) {
+  if (!block.parts) return;
+  const html = (block.argsList || []).map(a => a.text).filter(Boolean).join(' ');
+  const part = block.parts.find(p => p.key === 'arguments');
+  if (part) part.html = html;
+  else block.parts.splice(1, 0, { key: 'arguments', title: 'Аргументы', html });
+}
+
+/** Подблоки конструктора по линии защиты; sel — аргументы/дела практики. */
+function buildLineParts(line, sel = {}) {
   const parts = [];
   parts.push({ key: 'line', title: 'Линия защиты', html: `${shortLineTitle(line.title)}${line.thesis ? '. Тезис: ' + line.thesis : ''}` });
-  parts.push({ key: 'arguments', title: 'Аргументы', html: (line.argument || line.thesis || REGEN_FALLBACK_TEXT).replace(/\s+/g, ' ').trim() });
-  if (line.norms) parts.push({ key: 'norms', title: 'Нормативное обоснование', html: line.norms });
+
+  const argsList = sel.argsList || defaultArgsList(line);
+  parts.push({ key: 'arguments', title: 'Аргументы', html: argsList.map(a => a.text).join(' ') });
+
+  if (line.norms) parts.push({ key: 'norms', title: 'Нормативная опора', html: line.norms });
+
   const practice = state.card.practice;
   if (practice && practice.length) {
-    parts.push({ key: 'practice', title: 'Практика', html: practice.slice(0, 2).map(p => `${p.num} (${p.court}) — ${p.result.toLowerCase()}`).join('; ') + '.' });
+    const pSel = (sel.selectedPractice || [0, 1]).filter(i => practice[i]);
+    if (pSel.length) {
+      parts.push({ key: 'practice', title: 'Практика', html: pSel.map(i => `${practice[i].num} (${practice[i].court}) — ${practice[i].result.toLowerCase()}`).join('; ') + '.' });
+    }
   }
   if (state.card.circumstances && state.card.circumstances.length) {
     parts.push({ key: 'circumstances', title: 'Обстоятельства', html: state.card.circumstances.join('; ') + '.' });
   }
+  parts.push({ key: 'other', title: 'Другие факты и доводы', html: '' });
   return parts;
 }
 
@@ -621,8 +895,53 @@ function generateFromParts(parts) {
 
 /** Вставка конструкторного блока по линии: конструктор + сразу сгенерированный текст. */
 function insertLineBlock(line, opts = {}) {
-  const parts = buildLineParts(line);
-  return insertBlock('', { ...opts, lineId: line.id, parts, generated: generateFromParts(parts) });
+  const argsList = defaultArgsList(line);
+  const selectedPractice = state.card.practice && state.card.practice.length
+    ? [0, 1].filter(i => state.card.practice[i]) : null;
+  const parts = buildLineParts(line, { argsList, selectedPractice });
+  const id = insertBlock('', { ...opts, lineId: line.id, parts, generated: generateFromParts(parts) });
+  const b = getBlock(id);
+  b.argsList = argsList;
+  b.selectedPractice = selectedPractice;
+  b.argsStale = false;
+  return id;
+}
+
+/** Привязка линии к блоку: полная перезаливка конструктора и текста. */
+function applyLineToBlock(block, line, { silent } = {}) {
+  block.lineId = line.id;
+  block.argsList = defaultArgsList(line);
+  block.argsStale = false;
+  block.selectedPractice = state.card.practice && state.card.practice.length
+    ? [0, 1].filter(i => state.card.practice[i]) : null;
+  block.parts = buildLineParts(line, { argsList: block.argsList, selectedPractice: block.selectedPractice });
+  block.generated = generateFromParts(block.parts);
+  block.evidence = block.evidence || [];
+  block.dirty = false;
+  block.dirtyNotified = false;
+  block.constructorDone = false;
+  state.boundLines.add(line.id);
+  addPlea(line.plea || PLEA_FALLBACK);
+  renderBlocks();
+  flashBlock(block.id);
+  if (!silent) addMessage('assistant', `К ${labelGen(block.label).replace('Блока', 'Блоку')} привязана линия «${shortLineTitle(line.title)}» — конструктор и текст заполнены заново.`);
+}
+
+/** «Вся информация блока будет удалена» — блок становится пустым. */
+function clearBlockInfo(block) {
+  block.lineId = null;
+  block.parts = null;
+  block.generated = '';
+  block.html = '';
+  block.evidence = [];
+  block.argsList = null;
+  block.argsStale = false;
+  block.selectedPractice = null;
+  block.dirty = false;
+  block.dirtyNotified = false;
+  block.constructorDone = false;
+  renderBlocks();
+  updateChecklist();
 }
 
 /**
@@ -666,8 +985,14 @@ function composeVerdictText() {
 function setActiveBlock(id) {
   if (state.activeBlockId === id) return;
   state.activeBlockId = id;
+  state.activeSubpart = null;
   document.querySelectorAll('.doc-block').forEach(el =>
     el.classList.toggle('is-active', el.dataset.blockId === id));
+  renderContextChip();
+}
+
+function setActiveSubpart(sp) {
+  state.activeSubpart = sp;
   renderContextChip();
 }
 
@@ -733,10 +1058,11 @@ function generateHeaderLines(type) {
   const c = state.card;
   const advName = c.advocateGen || c.advocate;
   const cliName = c.clientGen || c.client;
-  const advLine = advName ? `от адвоката ${advName}` : 'от адвоката &lt;вставить ФИО адвоката&gt;';
+  const ph = t => `<span class="ph-mark">&lt;${t}&gt;</span>`;
+  const advLine = advName ? `от адвоката ${advName}` : `от адвоката ${ph('вставить ФИО адвоката')}`;
   const cliLine = cliName
     ? `в интересах ${c.clientStatus ? c.clientStatus + ' ' : ''}${cliName}`
-    : 'в интересах &lt;вставить ФИО доверителя&gt;';
+    : `в интересах ${ph('вставить ФИО доверителя')}`;
 
   if (type.court) {
     const court = c.court ? (type.key === 'appeal' ? c.court.appeal : c.court.cassation) : null;
@@ -751,7 +1077,7 @@ function generateHeaderLines(type) {
       if (c.court.firstInstanceRef) lines.push(`(${c.court.firstInstanceRef})`);
       return lines;
     }
-    return [`В &lt;вставить название суда ${type.court}&gt;`, advLine, cliLine];
+    return [`В ${ph('вставить название суда ' + type.court)}`, advLine, cliLine];
   }
   return [advLine, cliLine];
 }
@@ -779,13 +1105,16 @@ function renderContextChip() {
 
   const chip = document.createElement('span');
   chip.className = 'context-chip';
+  const sp = state.activeSubpart;
+  const chipLabel = block.label + (sp && sp.blockId === block.id ? ' · ' + sp.title : '');
   // пока идёт сценарий — пилз блока без крестика
-  chip.innerHTML = state.scenario ? block.label : `${block.label}
+  chip.innerHTML = state.scenario ? chipLabel : `${chipLabel}
     <button title="Отвязать блок">
       <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg>`;
   const closeBtn = chip.querySelector('button');
   if (closeBtn) closeBtn.addEventListener('click', () => {
     state.activeBlockId = null;
+    state.activeSubpart = null;
     document.querySelectorAll('.doc-block').forEach(el => el.classList.remove('is-active'));
     renderContextChip();
   });
@@ -1070,6 +1399,7 @@ async function routeText(text) {
   // Сценарий не запущен (состояние C)
   if (!sc) {
     if (trigger) return launchScenario(trigger);
+    if (state.activeSubpart) return editSubpartWithAI(text);
     return onFreeInput(text);
   }
 
@@ -1102,6 +1432,36 @@ async function routeText(text) {
     sc.onText = null;
     return handler(text);
   }
+}
+
+/** Редактирование активного подблока конструктора с ИИ по запросу из чата. */
+async function editSubpartWithAI(text) {
+  const sp = state.activeSubpart;
+  const block = getBlock(sp.blockId);
+  const part = block && block.parts ? block.parts.find(p => p.key === sp.key) : null;
+  if (!block || !part) {
+    setActiveSubpart(null);
+    return onFreeInput(text);
+  }
+
+  await think(`Редактирую подблок «${part.title}» ${labelGen(block.label)}`, 1600);
+
+  if (sp.key === 'arguments') {
+    // запрос из чата добавляет ручной аргумент
+    block.argsList = block.argsList || [];
+    block.argsList.push({ text: `${text.charAt(0).toUpperCase()}${text.slice(1).replace(/\.?$/, '.')}`, source: null, auto: false, poolIdx: null });
+    syncArgsPart(block);
+  } else {
+    const base = stripTags(part.html).replace(/\s+/g, ' ').trim();
+    const lead = base.split('. ').slice(0, 2).join('. ').replace(/\.?$/, '.');
+    part.html = `${lead} Дополнительно учтено: ${text.charAt(0).toLowerCase()}${text.slice(1).replace(/\.?$/, '.')}`;
+    if (['norms', 'practice', 'circumstances', 'other'].includes(sp.key)) block.argsStale = true;
+  }
+  block.dirty = true;
+  block.dirtyNotified = true;
+  renderBlocks();
+  flashBlock(block.id);
+  addMessage('assistant', `Подблок «${part.title}» ${labelGen(block.label)} отредактирован с учётом запроса. Кнопка «Перегенерировать» стала активна.`);
 }
 
 async function onFreeInput(text) {
@@ -1152,17 +1512,21 @@ async function finalizeDocType(type, title) {
   setStep(type.key === 'motion' ? '2.2' : type.key === 'other' ? '2.3' : '2.1.1');
   await think('Формирую шапку документа', 1600);
   renderDocHeader(generateHeaderLines(type));
-  addMessage('assistant', `Тип документа выбран: «${title}». Шапка документа сформирована.`);
 
-  // 2.1.1.2 / 2.2 — вставляем плейсхолдеры структуры документа
+  // короткое сообщение: тип + шапка + (для жалоб) следующий шаг
+  const uploadHint = type.key === 'appeal'
+    ? ' Следующим шагом загрузите приговор первой инстанции.'
+    : type.key === 'cassation'
+      ? ' Следующим шагом загрузите приговор первой инстанции и апелляционное определение.'
+      : '';
+  addMessage('assistant', `Тип документа выбран: «${title}». Шапка документа сформирована.${uploadHint}`);
+
+  // 2.1.1.2 / 2.2 — плейсхолдеры структуры вставляются молча
   state.structure = DOC_STRUCTURE[type.key] || null;
   if (state.structure) {
     setStep(type.key === 'motion' ? '2.2' : '2.1.1.2');
     renderBlocks();
     renderPleas();
-    addMessage('assistant', 'В документ вставлены плейсхолдеры структуры: ' +
-      state.structure.map(p => p.title.toLowerCase()).join(', ') +
-      '. Наведите на рамку в документе, чтобы заполнить её.');
   }
 
   // 2.1 апелляция/кассация: следующим шагом предлагаем загрузить документы (или пропустить)
@@ -1198,9 +1562,7 @@ async function finalizeDocType(type, title) {
           goGen();
         }
       }
-    ], type.key === 'appeal'
-      ? 'Следующим шагом загрузите приговор первой инстанции — я разберу его и заполню карточку дела и структуру документа. Либо пропустите этот шаг.'
-      : 'Следующим шагом загрузите приговор первой инстанции и апелляционное определение — я разберу их и заполню карточку дела и структуру документа. Либо пропустите этот шаг.');
+    ]);
     return;
   }
 
@@ -1447,15 +1809,7 @@ async function onLineChosen(line, episode, { created } = {}) {
         addMessage('user', 'Перегенерировать блок');
         await think('Генерирую новый текст блока', 2000);
         const target = getBlock(state.activeBlockId);
-        if (target) {
-          target.parts = buildLineParts(line);
-          target.generated = generateFromParts(target.parts);
-          target.dirty = false;
-          target.constructorDone = false;
-          renderBlocks();
-          flashBlock(target.id);
-        }
-        addPlea(line.plea || PLEA_FALLBACK);
+        if (target) applyLineToBlock(target, line, { silent: true });
         endScenario('Текст блока обновлён по конструктору линии, просительная часть пересобрана.');
       }
     },
@@ -1709,14 +2063,30 @@ async function runGenByLines() {
     insertBlock(composeVerdictText(), { atStart: true, section: 'verdict', kind: 'verdict' });
   }
 
-  // признание известно по карточке — заполняем автоматически
-  await maybeAutoAdmission();
+  // признание известно по карточке — заполняем автоматически (без отдельной отбивки)
+  await maybeAutoAdmission({ silent: true });
 
   setStep('17.4');
-  endScenario(
-    (factsAdded ? 'Сутевая часть по фабуле дела вставлена первым блоком. ' : '') +
-    `Текст по ${unbound.length} ранее непривязанн${unbound.length === 1 ? 'ой линии' : 'ым линиям'} защиты вставлен в конец документа. Просительная часть обновлена.`);
-  maybeExplainWarnings();
+  endScenario();
+
+  // акцентное финальное сообщение: переводим адвоката в документ слева
+  const doneSections = [];
+  if (state.blocks.some(b => (b.section || 'defense') === 'verdict')) doneSections.push('описание приговора');
+  if (factsFilled()) doneSections.push('обстоятельства дела');
+  if (state.blocks.some(b => (b.section || 'defense') === 'admission')) doneSections.push('признание');
+  doneSections.push(`защитная часть (${unbound.length} блок${unbound.length === 1 ? '' : 'а'})`, 'просительная часть');
+
+  const accent = addMessage('assistant', '');
+  accent.classList.add('msg--accent');
+  accent.innerHTML = `
+    <div class="msg-accent__title">Черновик собран — продолжайте в документе слева</div>
+    <ul>
+      <li>Заполнено: ${doneSections.join(', ')}.</li>
+      <li>Жёлтые метки <span class="msg-warn-icon">!</span> и чеклист сверху показывают, что требует завершения.</li>
+      <li>Раскройте конструктор блока, чтобы уточнить аргументы, доказательства и практику.</li>
+    </ul>`;
+  scrollFeed();
+  state.warnExplained = true;
 }
 
 /** 17.3 — сутевая часть: фабула всех эпизодов дела. */
@@ -1778,17 +2148,20 @@ async function runDocxPipeline() {
 
   setStep('3.3');
   state.card = clone(DOCX_PARSED_CARD);
-  addMessage('assistant', 'Карточка дела обновлена по материалам приговора.');
 
   setStep('3.4');
   const c = state.card;
-  addMessage('assistant',
-    `Отчёт по разбору:\n` +
-    `• Доверитель: ${c.client}\n` +
-    `• Эпизодов фабулы: ${c.episodes.length}\n` +
-    `• Линий защиты: ${c.lines.length}\n` +
-    `• Доказательств: ${c.evidence.length}\n` +
-    `• Обстоятельств: ${c.circumstances.length}`).classList.add('msg--pre');
+  const report = addMessage('assistant', '');
+  report.classList.add('msg--card');
+  report.innerHTML = `
+    <div class="msg-card__title">Разбор завершён — карточка дела заполнена</div>
+    <ul>
+      <li>Доверитель: ${c.client}</li>
+      <li>Эпизоды фабулы: ${c.episodes.length}</li>
+      <li>Линии защиты: ${c.lines.length}</li>
+      <li>Доказательства: ${c.evidence.length} · Обстоятельства: ${c.circumstances.length}</li>
+    </ul>`;
+  scrollFeed();
 }
 
 /** Разбор из состояния C или после перебивки: далее сценарий 17. */
@@ -1881,7 +2254,7 @@ function runStarAction(action) {
       openEvidenceModal(block);
       break;
     case 'practice':
-      openPracticeModal();
+      openPracticeModal(block);
       break;
     case 'shorter':
       addMessage('user', `${block.label}: Перепеши короче`);
@@ -2030,7 +2403,7 @@ async function onRewriteBlock(block, request) {
   }
   renderBlocks();
   flashBlock(block.id);
-  endScenario(`Текст ${block.label} отредактирован согласно вашему запросу.`);
+  endScenario(`Текст ${labelGen(block.label)} отредактирован согласно вашему запросу.`);
 }
 
 /* ---------- Модалки ---------- */
@@ -2115,9 +2488,10 @@ async function applyEvidence(block) {
     }
     block.dirty = true;
     block.dirtyNotified = true;
+    block.argsStale = true;
     renderBlocks();
     flashBlock(block.id);
-    addMessage('assistant', `Доказательства добавлены в ${block.label}: ${list.length} шт. Нажмите «Перегенерировать», чтобы учесть их в тексте блока.`);
+    addMessage('assistant', `Доказательства добавлены в ${block.label}: ${list.length} шт. Данные аргументов обновились — нажмите «Обновить аргументы», затем «Перегенерировать».`);
     return;
   }
 
@@ -2133,19 +2507,167 @@ async function applyEvidence(block) {
   addMessage('assistant', `Текст ${block.label} перегенерирован.`);
 }
 
-/** 16.3 — попап практики по линии защиты. */
-function openPracticeModal() {
-  const items = PRACTICE_CASES.map(c => `
-    <div class="practice-case">
-      <div class="practice-case__num">${c.num}</div>
-      <div class="practice-case__court">${c.court}</div>
-      <div>${c.summary}</div>
-      <span class="practice-case__result">${c.result}</span>
-    </div>`).join('');
+/** Модалка выбора линии защиты для блока (чекбоксы, текущая отмечена). */
+function openLineModal(block) {
+  const lines = state.card.lines;
+  if (!lines.length) {
+    openModal({
+      title: 'Линия защиты',
+      bodyHtml: 'В карточке дела пока нет линий защиты. Создайте линию командой «создай линию» или через меню ✦ в чате.',
+      buttons: [{ label: 'Закрыть' }]
+    });
+    return;
+  }
+
+  const items = lines.map(l => `
+    <label class="evidence-item">
+      <input type="checkbox" data-line-id="${l.id}" ${block.lineId === l.id ? 'checked' : ''}>
+      <span><b>${shortLineTitle(l.title)}</b>${l.thesis ? `<br><small class="modal-sub">${l.thesis}</small>` : ''}</span>
+    </label>`).join('');
+
   openModal({
-    title: 'Практика по линии защиты',
+    title: `Линия защиты · ${block.label}`,
     bodyHtml: items,
     buttons: [{ label: 'Закрыть' }]
+  });
+
+  modalEl.querySelectorAll('input[data-line-id]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const lineId = cb.dataset.lineId;
+      if (!cb.checked && block.lineId === lineId) {
+        // сняли галку с используемой линии
+        confirmLineChange(block, null);
+      } else if (cb.checked && lineId !== block.lineId) {
+        const newLine = lines.find(l => l.id === lineId);
+        if (block.lineId) confirmLineChange(block, newLine);
+        else { closeModal(); applyLineToBlock(block, newLine); }
+      }
+    });
+  });
+}
+
+/** Подтверждение смены/снятия линии: информация блока будет удалена. */
+function confirmLineChange(block, newLine) {
+  openModal({
+    title: 'Смена линии защиты',
+    bodyHtml: 'Уверены, что хотите поменять линию? При смене линии вся информация блока будет удалена.',
+    buttons: [
+      { label: 'Отмена' },
+      {
+        label: 'Да, поменять',
+        primary: true,
+        onClick: () => {
+          closeModal();
+          const label = block.label;
+          clearBlockInfo(block);
+          if (newLine) applyLineToBlock(block, newLine);
+          else addMessage('assistant', `Линия защиты отвязана от ${labelGen(label)}, информация блока удалена.`);
+        }
+      }
+    ]
+  });
+}
+
+/** Модалка аргументов: авто-предложения, сгруппированные по источникам. */
+function openArgsModal(block) {
+  const line = state.card.lines.find(l => l.id === block.lineId);
+  if (!line) {
+    openModal({ title: 'Аргументы', bodyHtml: 'Сначала привяжите к блоку линию защиты.', buttons: [{ label: 'Закрыть' }] });
+    return;
+  }
+  const pool = line.argumentsPool || [];
+  const usedIdx = new Set((block.argsList || []).filter(a => a.auto && a.poolIdx !== null).map(a => a.poolIdx));
+
+  const GROUPS = [['practice', 'Практика'], ['circumstances', 'Обстоятельства'], ['norms', 'Нормативная опора'], ['fact', 'Факты']];
+  const groupsHtml = GROUPS.map(([src, title]) => {
+    const items = pool.map((a, i) => ({ a, i })).filter(x => (x.a.source || 'fact') === src);
+    if (!items.length) return '';
+    return `
+      <div class="args-group">
+        <div class="args-group__title">${title}</div>
+        ${items.map(({ a, i }) => `
+          <label class="evidence-item">
+            <input type="checkbox" data-idx="${i}" ${usedIdx.has(i) ? 'checked' : ''}>
+            <span>${a.text}</span>
+          </label>`).join('')}
+      </div>`;
+  }).join('');
+
+  openModal({
+    title: `Аргументы линии · ${block.label}`,
+    bodyHtml: groupsHtml || 'Для этой линии аргументы не подобраны.',
+    buttons: [
+      { label: 'Отмена' },
+      {
+        label: 'Применить',
+        primary: true,
+        onClick: () => {
+          const sel = [...modalEl.querySelectorAll('input[data-idx]:checked')].map(i => +i.dataset.idx);
+          closeModal();
+          const manual = (block.argsList || []).filter(a => !a.auto);
+          block.argsList = [
+            ...sel.sort((x, y) => x - y).map(i => ({ text: pool[i].text, source: pool[i].source, auto: true, poolIdx: i })),
+            ...manual
+          ];
+          block.argsStale = false;
+          syncArgsPart(block);
+          block.dirty = true;
+          block.dirtyNotified = true;
+          renderBlocks();
+          flashBlock(block.id);
+          addMessage('assistant', `Состав аргументов ${labelGen(block.label)} обновлён: выбрано ${sel.length} из ${pool.length} предложенных. Кнопка «Перегенерировать» активна.`);
+        }
+      }
+    ]
+  });
+}
+
+/** 16.3 — практика: чекбоксы по делам, отмечены упомянутые в тексте блока. */
+function openPracticeModal(block) {
+  const pool = (state.card.practice && state.card.practice.length) ? state.card.practice : PRACTICE_CASES;
+  const canBind = !!(block && block.parts && block.parts.length);
+  const selected = canBind ? (block.selectedPractice || []) : [];
+
+  const items = pool.map((c, i) => `
+    <label class="evidence-item">
+      <input type="checkbox" data-idx="${i}" ${selected.includes(i) ? 'checked' : ''} ${canBind ? '' : 'disabled'}>
+      <span><b>${c.num}</b> · ${c.court}<br><small class="modal-sub">${c.summary}</small><br><span class="practice-case__result">${c.result}</span></span>
+    </label>`).join('');
+
+  openModal({
+    title: canBind ? `Практика по линии · ${block.label}` : 'Практика по линии защиты',
+    bodyHtml: items,
+    buttons: canBind ? [
+      { label: 'Отмена' },
+      {
+        label: 'Применить',
+        primary: true,
+        onClick: () => {
+          const sel = [...modalEl.querySelectorAll('input[data-idx]:checked')].map(i => +i.dataset.idx);
+          closeModal();
+          block.selectedPractice = sel;
+          const html = sel.map(i => `${pool[i].num} (${pool[i].court}) — ${pool[i].result.toLowerCase()}`).join('; ') + (sel.length ? '.' : '');
+          const existing = block.parts.find(p => p.key === 'practice');
+          if (sel.length) {
+            if (existing) existing.html = html;
+            else {
+              const idx = block.parts.findIndex(p => p.key === 'circumstances');
+              const item = { key: 'practice', title: 'Практика', html };
+              if (idx >= 0) block.parts.splice(idx, 0, item);
+              else block.parts.push(item);
+            }
+          } else if (existing) {
+            block.parts.splice(block.parts.indexOf(existing), 1);
+          }
+          block.dirty = true;
+          block.dirtyNotified = true;
+          block.argsStale = true;
+          renderBlocks();
+          flashBlock(block.id);
+          addMessage('assistant', `Практика ${labelGen(block.label)} обновлена: выбрано дел — ${sel.length}. Кнопка «Перегенерировать» активна.`);
+        }
+      }
+    ] : [{ label: 'Закрыть' }]
   });
 }
 
