@@ -142,15 +142,12 @@ function buildBlockMeta(block) {
   let barBtns;
 
   if (isDefense) {
-    const line = state.card.lines.find(l => l.id === block.lineId) || null;
     const evCount = (block.evidence || []).length;
-    const argsPart = block.parts ? block.parts.find(p => p.key === 'arguments') : null;
-    const argsOk = !!(argsPart && stripTags(argsPart.html).trim());
-    // все флаги-кнопки и действия — в одну линию
+    const argsCount = (block.argsList || []).length;
+    // кнопки действий (сводка о блоке — в его шапке; смены линии нет: удалить блок и создать новый)
     barBtns = [
-      ['line-modal', line ? 'Линия: ' + shortLineTitle(line.title) : 'Линия защиты не привязана', !line, 'meta-btn--line'],
       ['evidence-modal', evCount ? 'Доказательства: ' + evCount : 'Нет привязанных доказательств', !evCount, ''],
-      ['args-modal', argsOk ? 'Аргументы: есть' : 'Нет аргументов', !argsOk, ''],
+      ['args-modal', argsCount ? 'Аргументы: ' + argsCount : 'Нет аргументов', !argsCount, ''],
       ['practice-modal', 'Практика', false, ''],
       ['rewrite', 'Редактировать с ИИ', false, '']
     ];
@@ -158,10 +155,8 @@ function buildBlockMeta(block) {
     barBtns = [['rewrite', 'Редактировать с ИИ', false, '']];
   }
 
-  const rightHtml = (isCtor ? `
-    <button class="meta-regen" data-special="regen" ${block.dirty ? '' : 'disabled'}>Перегенерировать</button>
-    <button data-special="ctor-toggle">${block.constructorDone ? 'Открыть конструктор' : 'Закрыть конструктор для блока'}</button>` : '')
-    + '<button class="meta-del" data-special="delete" title="Удалить блок">Удалить</button>';
+  const rightHtml = isCtor ? `
+    <button class="meta-regen" data-special="regen" ${block.dirty ? '' : 'disabled'}>Перегенерировать</button>` : '';
 
   meta.innerHTML = `
     <div class="doc-block__tools">
@@ -177,7 +172,6 @@ function buildBlockMeta(block) {
       setActiveBlock(block.id);
       if (state.busy) return;
       switch (id) {
-        case 'line-modal': openLineModal(block); return;
         case 'args-modal': openArgsModal(block); return;
         case 'practice-modal': openPracticeModal(block); return;
         case 'evidence-modal':
@@ -192,15 +186,25 @@ function buildBlockMeta(block) {
     e.stopPropagation();
     onRegenerateClick(block);
   });
-  meta.querySelector('[data-special="ctor-toggle"]')?.addEventListener('click', e => {
-    e.stopPropagation();
-    toggleConstructor(block);
-  });
-  meta.querySelector('[data-special="delete"]')?.addEventListener('click', e => {
-    e.stopPropagation();
-    confirmDeleteBlock(block);
-  });
   return meta;
+}
+
+/** Короткая сводка блока для первой строки (по образу отчёта в чате). */
+function blockSummary(block) {
+  const sec = block.section || 'defense';
+  if (sec !== 'defense' || !(block.parts && block.parts.length)) {
+    const titles = { verdict: 'Описание приговора', facts: 'Обстоятельства дела', admission: 'Признание', law: 'Правовое обоснование' };
+    return titles[sec] || 'Текстовый блок';
+  }
+  const line = state.card.lines.find(l => l.id === block.lineId) || null;
+  const ep = line && line.episodeId ? state.card.episodes.findIndex(x => x.id === line.episodeId) : -1;
+  const bits = [];
+  if (ep >= 0) bits.push(`Эпизод ${ep + 1}`);
+  bits.push(line ? `Линия: ${shortLineTitle(line.title)}` : 'Линия не привязана');
+  if (line && line.thesis) bits.push(`Тезис: ${line.thesis.split('. ')[0].slice(0, 60)}${line.thesis.length > 60 ? '…' : ''}`);
+  bits.push(`Доказательств: ${(block.evidence || []).length}`);
+  bits.push(`Аргументов: ${(block.argsList || []).length}`);
+  return bits.join(' · ');
 }
 
 /** Удаление блока с подтверждением. */
@@ -272,7 +276,65 @@ function buildConstructor(block) {
   return ctor;
 }
 
-/** Редактор аргументов: подподблоки с источниками, удалением и добавлением. */
+/** Основания одного аргумента (tree-режим): вложенный раскрывающийся список. */
+function buildGroundsEl(block, arg) {
+  const g = document.createElement('div');
+  g.className = 'doc-arg__grounds' + (arg.groundsOpen === false ? ' is-collapsed' : '');
+
+  (arg.grounds || []).forEach((ground, gi) => {
+    const row = document.createElement('div');
+    row.className = 'doc-ground';
+    row.innerHTML = `
+      <span class="doc-ground__type doc-ground__type--${ground.type}">${GROUND_LABELS[ground.type] || ground.type}</span>
+      <span class="doc-ground__text" contenteditable="true">${ground.text}${ground.evidence ? ` <i class="doc-ground__ev">(${ground.evidence})</i>` : ''}</span>
+      <button class="doc-arg__del" title="Удалить основание" type="button">×</button>`;
+    const txt = row.querySelector('.doc-ground__text');
+    txt.addEventListener('input', () => {
+      ground.text = txt.innerText;
+      markDirty(block, 'Аргументы', 'arguments');
+    });
+    row.querySelector('.doc-arg__del').addEventListener('click', e => {
+      e.stopPropagation();
+      arg.grounds.splice(gi, 1);
+      block.dirty = true;
+      renderBlocks();
+    });
+    g.appendChild(row);
+  });
+
+  if (argOnlyPractice(arg)) {
+    const warn = document.createElement('div');
+    warn.className = 'doc-ground__warn';
+    warn.textContent = 'Основание подкреплено только практикой — рекомендуем добавить доказательство или норму.';
+    g.appendChild(warn);
+  }
+
+  const addRow = document.createElement('div');
+  addRow.className = 'doc-ground__add';
+  addRow.innerHTML = ['fact', 'norm', 'practice'].map(t =>
+    `<button type="button" data-gt="${t}">+ ${GROUND_LABELS[t]}</button>`).join('');
+  addRow.querySelectorAll('button').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      arg.grounds = arg.grounds || [];
+      arg.grounds.push({ type: btn.dataset.gt, text: '' });
+      arg.groundsOpen = true;
+      block.dirty = true;
+      renderBlocks();
+      const rows = document.querySelectorAll(`.doc-block[data-block-id="${block.id}"] .doc-ground__text`);
+      rows[rows.length - 1]?.focus();
+    });
+  });
+  g.appendChild(addRow);
+  return g;
+}
+
+/**
+ * Редактор аргументов: подподблоки с источниками, перетаскиванием и удалением.
+ * Последний элемент — всегда пустой с плейсхолдером; ввод создаёт новый пустой.
+ * tree: у каждого аргумента раскрываются его основания (факт/норма/практика);
+ * flat: основания лежат одной строкой внутри аргумента.
+ */
 function buildArgsEditor(block) {
   const wrap = document.createElement('div');
   wrap.className = 'doc-args';
@@ -291,10 +353,21 @@ function buildArgsEditor(block) {
   (block.argsList || []).forEach((arg, i) => {
     const item = document.createElement('div');
     item.className = 'doc-arg';
+    const groundsFlat = ARGS_MODE === 'flat' && (arg.grounds || []).length
+      ? `<div class="doc-arg__flatgrounds">Основания: ${arg.grounds.map(gr =>
+          `<b>${GROUND_LABELS[gr.type]}</b> — ${gr.text}${gr.evidence ? ' (' + gr.evidence + ')' : ''}`).join(' · ')}</div>`
+      : '';
     item.innerHTML = `
-      <div class="doc-arg__text" contenteditable="true">${arg.text}</div>
+      <span class="doc-arg__grip" draggable="true" title="Перетащить аргумент">⋮⋮</span>
+      <div class="doc-arg__main">
+        <div class="doc-arg__text" contenteditable="true">${arg.text}</div>
+        ${groundsFlat}
+        ${ARGS_MODE === 'flat' && argOnlyPractice(arg) ? '<div class="doc-ground__warn">Основание подкреплено только практикой — рекомендуем добавить доказательство или норму.</div>' : ''}
+      </div>
       <span class="doc-arg__src${arg.auto ? '' : ' doc-arg__src--manual'}">${arg.auto ? 'авто · ' + (SRC_LABELS[arg.source] || 'факт') : 'вручную'}</span>
+      ${ARGS_MODE === 'tree' ? `<button class="doc-arg__fold" type="button" title="Основания аргумента"><svg viewBox="0 0 24 24" style="transform: rotate(${arg.groundsOpen === false ? 0 : 180}deg)"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : ''}
       <button class="doc-arg__del" title="Удалить аргумент" type="button">×</button>`;
+
     const text = item.querySelector('.doc-arg__text');
     text.addEventListener('input', () => {
       arg.text = text.innerText;
@@ -310,23 +383,74 @@ function buildArgsEditor(block) {
       renderBlocks();
       addMessage('assistant', `Аргумент удалён из ${labelGen(block.label)}. Кнопка «Перегенерировать» активна.`);
     });
+    item.querySelector('.doc-arg__fold')?.addEventListener('click', e => {
+      e.stopPropagation();
+      arg.groundsOpen = arg.groundsOpen === false;
+      renderBlocks();
+    });
+
+    // перетаскивание аргументов
+    const grip = item.querySelector('.doc-arg__grip');
+    grip.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/arg-idx', String(i));
+      e.dataTransfer.setData('text/arg-block', block.id);
+      item.classList.add('is-dragging');
+    });
+    grip.addEventListener('dragend', () => item.classList.remove('is-dragging'));
+    item.addEventListener('dragover', e => {
+      if (![...e.dataTransfer.types].includes('text/arg-idx')) return;
+      e.preventDefault();
+      item.classList.add('is-drop-target');
+    });
+    item.addEventListener('dragleave', () => item.classList.remove('is-drop-target'));
+    item.addEventListener('drop', e => {
+      item.classList.remove('is-drop-target');
+      if (e.dataTransfer.getData('text/arg-block') !== block.id) return;
+      const from = +e.dataTransfer.getData('text/arg-idx');
+      if (Number.isNaN(from) || from === i) return;
+      e.preventDefault();
+      const moved = block.argsList.splice(from, 1)[0];
+      block.argsList.splice(i, 0, moved);
+      syncArgsPart(block);
+      block.dirty = true;
+      renderBlocks();
+    });
+
     wrap.appendChild(item);
+
+    if (ARGS_MODE === 'tree') wrap.appendChild(buildGroundsEl(block, arg));
   });
 
-  const add = document.createElement('button');
-  add.className = 'doc-arg__add';
-  add.type = 'button';
-  add.textContent = '+ Добавить аргумент';
-  add.addEventListener('click', e => {
-    e.stopPropagation();
+  // постоянный пустой аргумент-плейсхолдер вместо кнопки добавления
+  const empty = document.createElement('div');
+  empty.className = 'doc-arg doc-arg--empty';
+  empty.innerHTML = `
+    <span class="doc-arg__grip" style="visibility:hidden">⋮⋮</span>
+    <div class="doc-arg__main"><div class="doc-arg__text" contenteditable="true" data-ph="${ARGS_MODE === 'flat' ? 'Добавьте свой аргумент и его основания (факт, норма, практика)' : 'Добавьте свой аргумент'}"></div></div>`;
+  const emptyText = empty.querySelector('.doc-arg__text');
+  emptyText.addEventListener('input', () => {
+    const val = emptyText.innerText.trim();
+    if (!val) return;
     block.argsList = block.argsList || [];
-    block.argsList.push({ text: '', source: null, auto: false, poolIdx: null });
+    block.argsList.push({ text: val, source: null, auto: false, poolIdx: null, grounds: [] });
+    syncArgsPart(block);
+    markDirty(block, 'Аргументы', 'arguments');
+    // элемент становится настоящим аргументом, ниже появляется новый пустой
     renderBlocks();
-    const items = document.querySelectorAll(`.doc-block[data-block-id="${block.id}"] .doc-arg__text`);
-    const last = items[items.length - 1];
-    if (last) last.focus();
+    const items = document.querySelectorAll(`.doc-block[data-block-id="${block.id}"] .doc-arg:not(.doc-arg--empty) .doc-arg__text`);
+    const lastReal = items[items.length - 1];
+    if (lastReal) {
+      lastReal.focus();
+      const r = document.createRange();
+      r.selectNodeContents(lastReal);
+      r.collapse(false);
+      const s = getSelection();
+      s.removeAllRanges();
+      s.addRange(r);
+    }
   });
-  wrap.appendChild(add);
+  empty.addEventListener('click', e => e.stopPropagation());
+  wrap.appendChild(empty);
 
   return wrap;
 }
@@ -462,23 +586,70 @@ function renderBlocks() {
     counter += 1;
     block.label = `Блок ${counter}`;
     const issuesOk = !blockIssues(block).length;
+    const isCtor = !!(block.parts && block.parts.length);
     const el = document.createElement('div');
     el.className = 'doc-block' + (block.id === state.activeBlockId ? ' is-active' : '');
     el.dataset.blockId = block.id;
 
-    // метка и статус в sticky-обёртке: прилипают при скролле длинного блока
-    const headHtml = `
-      <div class="doc-block__pin" contenteditable="false">
-        <span class="doc-block__label">${block.label}</span>
-        <button class="doc-block__status ${issuesOk ? 'is-done' : ''}"
-                title="${issuesOk ? 'Готово' : 'По сводке блока чего-то не хватает'}" tabindex="-1"></button>
-      </div>`;
+    // первая строка блока: ручка перетаскивания, номер, сводка, иконки, статус; прилипает при скролле
+    const head = document.createElement('div');
+    head.className = 'doc-block__head';
+    head.contentEditable = 'false';
+    head.innerHTML = `
+      <span class="doc-block__grip" draggable="true" title="Перетащить блок">⋮⋮</span>
+      <span class="doc-block__num">${block.label}</span>
+      <span class="doc-block__summary" title="${blockSummary(block).replace(/"/g, '&quot;')}">${blockSummary(block)}</span>
+      ${isCtor ? `<button class="head-ic" data-h="toggle" title="${block.constructorDone ? 'Открыть конструктор' : 'Закрыть конструктор'}">
+        <svg viewBox="0 0 24 24" style="transform: rotate(${block.constructorDone ? 0 : 180}deg)"><path d="m6 9 6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>` : ''}
+      <button class="head-ic head-ic--del" data-h="delete" title="Удалить блок">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m3 0-.7 12.1a2 2 0 0 1-2 1.9H8.7a2 2 0 0 1-2-1.9L6 7m4 4v6m4-6v6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <span class="doc-block__status ${issuesOk ? 'is-done' : ''}"
+            title="${issuesOk ? 'Готово' : 'По сводке блока чего-то не хватает'}"></span>`;
 
-    if (block.parts && block.parts.length) {
-      // конструкторный блок: сводка/кнопки -> конструктор -> сгенерированный текст
-      // (кнопки сверху, чтобы «Закрыть/Открыть конструктор» не меняла положение)
+    head.querySelector('[data-h="toggle"]')?.addEventListener('click', e => {
+      e.stopPropagation();
+      toggleConstructor(block);
+    });
+    head.querySelector('[data-h="delete"]').addEventListener('click', e => {
+      e.stopPropagation();
+      confirmDeleteBlock(block);
+    });
+
+    // перетаскивание блока за ручку
+    const grip = head.querySelector('.doc-block__grip');
+    grip.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/block-id', block.id);
+      e.dataTransfer.effectAllowed = 'move';
+      el.classList.add('is-dragging');
+    });
+    grip.addEventListener('dragend', () => el.classList.remove('is-dragging'));
+    el.addEventListener('dragover', e => {
+      if (![...e.dataTransfer.types].includes('text/block-id')) return;
+      e.preventDefault();
+      el.classList.add('is-drop-target');
+    });
+    el.addEventListener('dragleave', () => el.classList.remove('is-drop-target'));
+    el.addEventListener('drop', e => {
+      const dragId = e.dataTransfer.getData('text/block-id');
+      el.classList.remove('is-drop-target');
+      if (!dragId || dragId === block.id) return;
+      e.preventDefault();
+      const from = state.blocks.findIndex(b => b.id === dragId);
+      const dragged = state.blocks[from];
+      if (!dragged || (dragged.section || 'defense') !== (block.section || 'defense')) return;
+      state.blocks.splice(from, 1);
+      const to = state.blocks.findIndex(b => b.id === block.id);
+      state.blocks.splice(to, 0, dragged);
+      renderBlocks();
+      addMessage('assistant', `${dragged.label} перемещён.`);
+    });
+
+    if (isCtor) {
+      // конструкторный блок: сводка -> кнопки -> конструктор -> сгенерированный текст
       el.contentEditable = 'false';
-      el.innerHTML = headHtml;
+      el.appendChild(head);
       const meta = buildBlockMeta(block);
       meta.classList.add('doc-block__meta--top');
       el.appendChild(meta);
@@ -486,14 +657,15 @@ function renderBlocks() {
       el.appendChild(buildGenerated(block));
     } else {
       el.contentEditable = 'true';
-      el.innerHTML = `${headHtml}${block.html}`;
+      el.appendChild(head);
+      const content = document.createElement('div');
+      content.className = 'doc-block__content';
+      content.innerHTML = block.html;
+      el.appendChild(content);
       el.appendChild(buildBlockMeta(block));
-      // правки пользователя в редакторе сохраняются в стейт и переживают перерисовку
+      // правки пользователя сохраняются в стейт и переживают перерисовку
       el.addEventListener('input', () => {
-        const copy = el.cloneNode(true);
-        copy.querySelector('.doc-block__pin')?.remove();
-        copy.querySelector('.doc-block__meta')?.remove();
-        block.html = copy.innerHTML;
+        block.html = content.innerHTML;
         updateChecklist();
       });
     }
@@ -832,20 +1004,42 @@ const SRC_LABELS = {
   fact: 'факт'
 };
 
-/** Стартовый список аргументов по линии: первые два из пула, авто. */
+/** Стартовый список аргументов по линии: первые два из пула, авто (с основаниями). */
 function defaultArgsList(line) {
   const pool = line.argumentsPool || [];
   if (!pool.length) {
     const text = (line.argument || line.thesis || REGEN_FALLBACK_TEXT).replace(/\s+/g, ' ').trim();
-    return [{ text, source: 'fact', auto: true, poolIdx: null }];
+    return [{ text, source: 'fact', auto: true, poolIdx: null, grounds: [] }];
   }
-  return pool.slice(0, 2).map((a, i) => ({ text: a.text, source: a.source, auto: true, poolIdx: i }));
+  return pool.slice(0, 2).map((a, i) => ({
+    text: a.text, source: a.source, auto: true, poolIdx: i,
+    grounds: (a.grounds || []).map(g => ({ ...g }))
+  }));
+}
+
+/** Основание только из практики — рекомендуем подкрепить доказательством или нормой. */
+function argOnlyPractice(arg) {
+  const g = arg.grounds || [];
+  return g.length > 0 && g.every(x => x.type === 'practice');
+}
+
+/** Текстовое представление аргументов (в tree — вместе с их основаниями). */
+function argsListToHtml(argsList) {
+  return (argsList || []).map(a => {
+    let t = (a.text || '').trim();
+    if (!t) return '';
+    if (ARGS_MODE === 'tree' && a.grounds && a.grounds.length) {
+      t += ` Это подтверждается: ${a.grounds.map(g =>
+        `${g.text}${g.evidence ? ' (' + g.evidence + ')' : ''}`).filter(Boolean).join('; ')}.`;
+    }
+    return t;
+  }).filter(Boolean).join(' ');
 }
 
 /** Синхронизация подблока «Аргументы» с списком аргументов блока. */
 function syncArgsPart(block) {
   if (!block.parts) return;
-  const html = (block.argsList || []).map(a => a.text).filter(Boolean).join(' ');
+  const html = argsListToHtml(block.argsList);
   const part = block.parts.find(p => p.key === 'arguments');
   if (part) part.html = html;
   else block.parts.splice(1, 0, { key: 'arguments', title: 'Аргументы', html });
@@ -854,23 +1048,29 @@ function syncArgsPart(block) {
 /** Подблоки конструктора по линии защиты; sel — аргументы/дела практики. */
 function buildLineParts(line, sel = {}) {
   const parts = [];
-  parts.push({ key: 'line', title: 'Линия защиты', html: `${shortLineTitle(line.title)}${line.thesis ? '. Тезис: ' + line.thesis : ''}` });
+  parts.push({ key: 'line', title: 'Линия защиты', html: shortLineTitle(line.title) });
+  // тезис — отдельный подблок (в текущей модели тезис один на линию, по ревизии №5)
+  if (line.thesis) parts.push({ key: 'thesis', title: 'Тезис', html: line.thesis });
 
   const argsList = sel.argsList || defaultArgsList(line);
-  parts.push({ key: 'arguments', title: 'Аргументы', html: argsList.map(a => a.text).join(' ') });
+  parts.push({ key: 'arguments', title: 'Аргументы', html: argsListToHtml(argsList) });
 
-  if (line.norms) parts.push({ key: 'norms', title: 'Нормативная опора', html: line.norms });
-
-  const practice = state.card.practice;
-  if (practice && practice.length) {
-    const pSel = (sel.selectedPractice || [0, 1]).filter(i => practice[i]);
-    if (pSel.length) {
-      parts.push({ key: 'practice', title: 'Практика', html: pSel.map(i => `${practice[i].num} (${practice[i].court}) — ${practice[i].result.toLowerCase()}`).join('; ') + '.' });
+  if (ARGS_MODE === 'flat') {
+    // плоский вариант: общие подблоки остаются на уровне блока
+    if (line.norms) parts.push({ key: 'norms', title: 'Нормативная опора', html: line.norms });
+    const practice = state.card.practice;
+    if (practice && practice.length) {
+      const pSel = (sel.selectedPractice || [0, 1]).filter(i => practice[i]);
+      if (pSel.length) {
+        parts.push({ key: 'practice', title: 'Практика', html: pSel.map(i => `${practice[i].num} (${practice[i].court}) — ${practice[i].result.toLowerCase()}`).join('; ') + '.' });
+      }
+    }
+    if (state.card.circumstances && state.card.circumstances.length) {
+      parts.push({ key: 'circumstances', title: 'Обстоятельства', html: state.card.circumstances.join('; ') + '.' });
     }
   }
-  if (state.card.circumstances && state.card.circumstances.length) {
-    parts.push({ key: 'circumstances', title: 'Обстоятельства', html: state.card.circumstances.join('; ') + '.' });
-  }
+  // в tree-режиме нормативка/практика/обстоятельства живут в основаниях аргументов —
+  // на уровне блока не дублируются
   parts.push({ key: 'other', title: 'Другие факты и доводы', html: '' });
   return parts;
 }
@@ -2408,9 +2608,10 @@ async function onRewriteBlock(block, request) {
 
 /* ---------- Модалки ---------- */
 
-function openModal({ title, bodyHtml, buttons }) {
+function openModal({ title, bodyHtml, buttons, context }) {
   modalEl.innerHTML = `
     <div class="modal__title">${title}</div>
+    ${context ? `<div class="modal__context">${context}</div>` : ''}
     <div class="modal__body">${bodyHtml}</div>
     <div class="modal__footer"></div>`;
   const footer = modalEl.querySelector('.modal__footer');
@@ -2433,6 +2634,51 @@ modalOverlay.addEventListener('click', e => {
   if (e.target === modalOverlay) closeModal();
 });
 
+/** Контекст модалки: к какой линии/тезису относится выбираемая сущность. */
+function blockModalContext(block) {
+  const line = block ? state.card.lines.find(l => l.id === block.lineId) : null;
+  if (!line) return null;
+  return `Линия защиты: ${shortLineTitle(line.title)}${line.thesis ? ' · Тезис: ' + line.thesis.split('. ')[0] : ''}`;
+}
+
+/** Секция «Свободный ввод» в модалке: ввели текст — галочка и новая пустая строка. */
+function freeInputSectionHtml() {
+  return `
+    <div class="args-group free-input">
+      <div class="args-group__title">Свободный ввод</div>
+      <label class="evidence-item free-row">
+        <input type="checkbox" tabindex="-1">
+        <span class="free-row__text" contenteditable="true" data-ph="Начните вводить…"></span>
+      </label>
+    </div>`;
+}
+
+function wireFreeInputs() {
+  const wrap = modalEl.querySelector('.free-input');
+  if (!wrap) return;
+  const attach = row => {
+    const span = row.querySelector('.free-row__text');
+    span.addEventListener('input', () => {
+      const filled = !!span.innerText.trim();
+      row.querySelector('input').checked = filled;
+      const rows = [...wrap.querySelectorAll('.free-row')];
+      if (filled && rows[rows.length - 1] === row) {
+        const next = row.cloneNode(true);
+        next.querySelector('input').checked = false;
+        next.querySelector('.free-row__text').innerHTML = '';
+        wrap.appendChild(next);
+        attach(next);
+      }
+    });
+  };
+  wrap.querySelectorAll('.free-row').forEach(attach);
+}
+
+function collectFreeInputs() {
+  return [...modalEl.querySelectorAll('.free-row__text')]
+    .map(s => s.innerText.trim()).filter(Boolean);
+}
+
 /** 16.1 — попап привязки доказательств к блоку. */
 function openEvidenceModal(block) {
   const evidence = state.card.evidence;
@@ -2454,16 +2700,23 @@ function openEvidenceModal(block) {
 
   openModal({
     title: `Привязать доказательства · ${block.label}`,
-    bodyHtml: items,
+    context: blockModalContext(block),
+    bodyHtml: items + freeInputSectionHtml(),
     buttons: [
       { label: 'Отмена' },
       { label: 'Привязать', primary: true, onClick: () => applyEvidence(block) }
     ]
   });
+  wireFreeInputs();
 }
 
 async function applyEvidence(block) {
-  const selected = [...modalEl.querySelectorAll('input:checked')].map(i => +i.dataset.idx);
+  const selected = [...modalEl.querySelectorAll('input[data-idx]:checked')].map(i => +i.dataset.idx);
+  // свободный ввод: новые доказательства попадают в карточку дела и сразу выбраны
+  collectFreeInputs().forEach(text => {
+    state.card.evidence.push(text);
+    selected.push(state.card.evidence.length - 1);
+  });
   closeModal();
 
   const prev = block.evidence || [];
@@ -2595,7 +2848,8 @@ function openArgsModal(block) {
 
   openModal({
     title: `Аргументы линии · ${block.label}`,
-    bodyHtml: groupsHtml || 'Для этой линии аргументы не подобраны.',
+    context: blockModalContext(block),
+    bodyHtml: (groupsHtml || 'Для этой линии аргументы не подобраны.') + freeInputSectionHtml(),
     buttons: [
       { label: 'Отмена' },
       {
@@ -2603,11 +2857,16 @@ function openArgsModal(block) {
         primary: true,
         onClick: () => {
           const sel = [...modalEl.querySelectorAll('input[data-idx]:checked')].map(i => +i.dataset.idx);
+          const free = collectFreeInputs();
           closeModal();
           const manual = (block.argsList || []).filter(a => !a.auto);
           block.argsList = [
-            ...sel.sort((x, y) => x - y).map(i => ({ text: pool[i].text, source: pool[i].source, auto: true, poolIdx: i })),
-            ...manual
+            ...sel.sort((x, y) => x - y).map(i => ({
+              text: pool[i].text, source: pool[i].source, auto: true, poolIdx: i,
+              grounds: (pool[i].grounds || []).map(g => ({ ...g }))
+            })),
+            ...manual,
+            ...free.map(t => ({ text: t, source: null, auto: false, poolIdx: null, grounds: [] }))
           ];
           block.argsStale = false;
           syncArgsPart(block);
@@ -2615,11 +2874,12 @@ function openArgsModal(block) {
           block.dirtyNotified = true;
           renderBlocks();
           flashBlock(block.id);
-          addMessage('assistant', `Состав аргументов ${labelGen(block.label)} обновлён: выбрано ${sel.length} из ${pool.length} предложенных. Кнопка «Перегенерировать» активна.`);
+          addMessage('assistant', `Состав аргументов ${labelGen(block.label)} обновлён: выбрано ${sel.length} из ${pool.length} предложенных${free.length ? ` + ${free.length} свободным вводом` : ''}. Кнопка «Перегенерировать» активна.`);
         }
       }
     ]
   });
+  wireFreeInputs();
 }
 
 /** 16.3 — практика: чекбоксы по делам, отмечены упомянутые в тексте блока. */
@@ -2636,6 +2896,7 @@ function openPracticeModal(block) {
 
   openModal({
     title: canBind ? `Практика по линии · ${block.label}` : 'Практика по линии защиты',
+    context: canBind ? blockModalContext(block) : null,
     bodyHtml: items,
     buttons: canBind ? [
       { label: 'Отмена' },
