@@ -311,22 +311,116 @@ function buildGroundsEl(block, arg) {
 
   const addRow = document.createElement('div');
   addRow.className = 'doc-ground__add';
-  addRow.innerHTML = ['fact', 'norm', 'practice'].map(t =>
+  addRow.innerHTML = ['fact', 'norm', 'practice', 'evidence'].map(t =>
     `<button type="button" data-gt="${t}">+ ${GROUND_LABELS[t]}</button>`).join('');
   addRow.querySelectorAll('button').forEach(btn => {
     btn.addEventListener('click', e => {
       e.stopPropagation();
-      arg.grounds = arg.grounds || [];
-      arg.grounds.push({ type: btn.dataset.gt, text: '' });
-      arg.groundsOpen = true;
-      block.dirty = true;
-      renderBlocks();
-      const rows = document.querySelectorAll(`.doc-block[data-block-id="${block.id}"] .doc-ground__text`);
-      rows[rows.length - 1]?.focus();
+      const type = btn.dataset.gt;
+      const push = ground => {
+        arg.grounds = arg.grounds || [];
+        arg.grounds.push(ground);
+        arg.groundsOpen = true;
+        block.dirty = true;
+        syncArgsPart(block);
+        renderBlocks();
+      };
+      // «+ Факт» — текстовое поле как есть; остальные — попапы выбора
+      if (type === 'fact') {
+        push({ type: 'fact', text: '' });
+        const rows = document.querySelectorAll(`.doc-block[data-block-id="${block.id}"] .doc-ground__text`);
+        rows[rows.length - 1]?.focus();
+        return;
+      }
+      if (type === 'norm') pickNormGround(block, texts => texts.forEach(t => push({ type: 'norm', text: t })));
+      if (type === 'practice') pickPracticeGround(block, texts => texts.forEach(t => push({ type: 'practice', text: t })));
+      if (type === 'evidence') pickEvidenceGround(block, texts => texts.forEach(t => push({ type: 'evidence', text: t })));
     });
   });
   g.appendChild(addRow);
   return g;
+}
+
+/** Попап выбора нормы из правовой базы; первыми — подсказки ИИ по линии блока. */
+function pickNormGround(block, onApply) {
+  const line = state.card.lines.find(l => l.id === block.lineId);
+  const keys = Object.keys(NORMS_DB);
+  const aiKeys = keys.filter(k => line && line.norms && line.norms.includes(k));
+  const ordered = [...aiKeys, ...keys.filter(k => !aiKeys.includes(k))];
+
+  const items = ordered.map(k => `
+    <label class="evidence-item">
+      <input type="checkbox" data-key="${k}">
+      <span><b>${k}</b>${aiKeys.includes(k) ? ' <span class="ai-hint">подсказка ИИ</span>' : ''}<br>
+      <small class="modal-sub">${NORMS_DB[k].act} · ${NORMS_DB[k].title}</small></span>
+    </label>`).join('');
+
+  openModal({
+    title: 'Правовая база — выбор нормы',
+    context: blockModalContext(block),
+    bodyHtml: items,
+    buttons: [
+      { label: 'Отмена' },
+      {
+        label: 'Добавить',
+        primary: true,
+        onClick: () => {
+          const sel = [...modalEl.querySelectorAll('input[data-key]:checked')].map(i => i.dataset.key);
+          closeModal();
+          if (sel.length) onApply(sel.map(k => `${k} — ${NORMS_DB[k].title}`));
+        }
+      }
+    ]
+  });
+}
+
+/** Попап выбора практики для основания — продуктовый вид. */
+function pickPracticeGround(block, onApply) {
+  const pool = (state.card.practice && state.card.practice.length) ? state.card.practice : PRACTICE_CASES;
+  openModal({
+    title: 'Практика по линии защиты — выбор дела',
+    context: blockModalContext(block),
+    bodyHtml: pool.map((c, i) => practiceCaseHtml(c, i, {})).join(''),
+    buttons: [
+      { label: 'Отмена' },
+      {
+        label: 'Добавить',
+        primary: true,
+        onClick: () => {
+          const sel = [...modalEl.querySelectorAll('input[data-idx]:checked')].map(i => +i.dataset.idx);
+          closeModal();
+          if (sel.length) onApply(sel.map(i => `${pool[i].num} (${pool[i].court}) — ${pool[i].decision || pool[i].result}`));
+        }
+      }
+    ]
+  });
+}
+
+/** Попап выбора доказательства для основания. */
+function pickEvidenceGround(block, onApply) {
+  const evidence = state.card.evidence;
+  if (!evidence.length) {
+    openModal({ title: 'Доказательства', bodyHtml: 'В карточке дела нет доказательств — они появятся после разбора приговора.', buttons: [{ label: 'Закрыть' }] });
+    return;
+  }
+  openModal({
+    title: 'Доказательства — выбор',
+    context: blockModalContext(block),
+    bodyHtml: evidence.map((ev, i) => `
+      <label class="evidence-item"><input type="checkbox" data-idx="${i}"><span>${ev}</span></label>`).join(''),
+    buttons: [
+      { label: 'Отмена' },
+      {
+        label: 'Добавить',
+        primary: true,
+        onClick: () => {
+          const sel = [...modalEl.querySelectorAll('input[data-idx]:checked')].map(i => +i.dataset.idx);
+          closeModal();
+          if (sel.length) onApply(sel.map(i => evidence[i]));
+        }
+      }
+    ]
+  });
 }
 
 /**
@@ -1119,7 +1213,7 @@ function applyLineToBlock(block, line, { silent } = {}) {
   block.evidence = block.evidence || [];
   block.dirty = false;
   block.dirtyNotified = false;
-  block.constructorDone = false;
+  block.constructorDone = true; // свёрнут по умолчанию
   state.boundLines.add(line.id);
   addPlea(line.plea || PLEA_FALLBACK);
   renderBlocks();
@@ -1222,7 +1316,7 @@ function insertBlock(text, { afterId, lineId, atStart, kind, section, parts, gen
     section: section || 'defense',
     parts: parts || null,        // подблоки конструктора [{key, title, html}]
     generated: generated || '',  // сгенерированный текст под конструктором
-    constructorDone: false,
+    constructorDone: !!(parts && parts.length), // блоки свёрнуты по умолчанию
     dirty: false,
     html: text
   };
@@ -2357,8 +2451,10 @@ async function runDocxPipeline() {
     <div class="msg-card__title">Разбор завершён — карточка дела заполнена</div>
     <ul>
       <li>Доверитель: ${c.client}</li>
-      <li>Эпизоды фабулы: ${c.episodes.length}</li>
-      <li>Линии защиты: ${c.lines.length}</li>
+      <li>Эпизоды (${c.episodes.length}):<ul>${c.episodes.map(e =>
+        `<li>${e.title}${e.admission ? ' — ' + e.admission : ''}</li>`).join('')}</ul></li>
+      <li>Линии защиты (${c.lines.length}):<ul>${c.lines.map(l =>
+        `<li>${shortLineTitle(l.title)}</li>`).join('')}</ul></li>
       <li>Доказательства: ${c.evidence.length} · Обстоятельства: ${c.circumstances.length}</li>
     </ul>`;
   scrollFeed();
@@ -2882,17 +2978,39 @@ function openArgsModal(block) {
   wireFreeInputs();
 }
 
-/** 16.3 — практика: чекбоксы по делам, отмечены упомянутые в тексте блока. */
+/** Карточка дела из практики в продуктовом стиле (как в попапе сайта). */
+function practiceCaseHtml(c, i, { checked, disabled } = {}) {
+  const row = (label, value) => `<div class="pcase__row"><span>${label}</span><b>${value}</b></div>`;
+  return `
+    <label class="pcase">
+      <input type="checkbox" data-idx="${i}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>
+      <div class="pcase__body">
+        <div class="pcase__title">${c.fullNum || c.num} <span class="pcase__ic">ⓘ</span></div>
+        <div class="pcase__meta">
+          <span class="pcase__pct">${c.percent || 90}%</span>
+          <span class="pcase__qual">${c.qualification || ''}</span>
+          <span class="pcase__inst">${c.instance || 'СУД ПЕРВОЙ ИНСТАНЦИИ'}</span>
+        </div>
+        <div class="pcase__rows">
+          ${row('Статус признания', c.admission || '—')}
+          ${row('Решение суда по преступлению', c.decision || c.result || '—')}
+          ${row('Название суда', c.court || '—')}
+          ${row('Наказание по преступлению', c.sentence || '—')}
+          ${row('Общее наказание', c.totalSentence || c.sentence || '—')}
+        </div>
+        <span class="pcase__src">источник</span>
+      </div>
+    </label>`;
+}
+
+/** 16.3 — практика: продуктовый вид, чекбоксы по делам, отмечены упомянутые в блоке. */
 function openPracticeModal(block) {
   const pool = (state.card.practice && state.card.practice.length) ? state.card.practice : PRACTICE_CASES;
   const canBind = !!(block && block.parts && block.parts.length);
   const selected = canBind ? (block.selectedPractice || []) : [];
 
-  const items = pool.map((c, i) => `
-    <label class="evidence-item">
-      <input type="checkbox" data-idx="${i}" ${selected.includes(i) ? 'checked' : ''} ${canBind ? '' : 'disabled'}>
-      <span><b>${c.num}</b> · ${c.court}<br><small class="modal-sub">${c.summary}</small><br><span class="practice-case__result">${c.result}</span></span>
-    </label>`).join('');
+  const items = pool.map((c, i) =>
+    practiceCaseHtml(c, i, { checked: selected.includes(i), disabled: !canBind })).join('');
 
   openModal({
     title: canBind ? `Практика по линии · ${block.label}` : 'Практика по линии защиты',
